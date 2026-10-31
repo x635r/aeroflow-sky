@@ -1,0 +1,229 @@
+/* ==========================================================================
+   AeroFlow Sky — 设计系统
+   ---------------------------------------------------------------------------
+   配色来自高空大气本身：夜侧深海蓝 + 晨昏线青 + 急流白热 + 湍流琥珀。
+   所有 UI 都是半透明玻璃，让地球始终是画面的主角。
+   ========================================================================== */
+
+:root {
+  --ink-900: #03060c;
+  --ink-850: #050a14;
+  --ink-800: #071019;
+  --ink-700: #0c1a27;
+  --ink-600: #122736;
+
+  --glass: rgba(9, 20, 32, 0.72);
+  --glass-strong: rgba(7, 16, 26, 0.9);
+  --glass-light: rgba(18, 39, 54, 0.55);
+
+  --line: rgba(120, 190, 230, 0.14);
+  --line-strong: rgba(120, 190, 230, 0.28);
+
+  --text: #dceaf5;
+  --text-dim: #8ba6ba;
+  --text-faint: #5c7386;
+
+  --jet: #35d0f5;
+  --jet-warm: #7ff0d2;
+  --hot: #ffc86b;
+  --hot-strong: #ff9350;
+  --danger: #ff5f8f;
+  --safe: #5ee7c4;
+
+  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-lg: 20px;
+
+  --shadow: 0 18px 48px -18px rgba(0, 0, 0, 0.85), 0 2px 10px -4px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 0 1px rgba(70, 200, 240, 0.09), 0 22px 60px -24px rgba(0, 0, 0, 0.9);
+
+  --font-ui: 'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Mono', ui-monospace, Menlo, Consolas,
+    monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--ink-900);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+::selection {
+  background: rgba(53, 208, 245, 0.3);
+  color: #fff;
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 190, 230, 0.2);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 190, 230, 0.35);
+}
+
+/* ---------- 排版基元 ---------- */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.caps {
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+/* ---------- 玻璃面板 ---------- */
+.glass {
+  background: var(--glass);
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.glass-strong {
+  background: var(--glass-strong);
+  backdrop-filter: blur(30px) saturate(150%);
+  -webkit-backdrop-filter: blur(30px) saturate(150%);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-glow);
+}
+
+/* ---------- 按钮 ---------- */
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+button:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--jet);
+  outline-offset: 2px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(12, 26, 39, 0.6);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 500;
+  transition: all 0.16s ease;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: rgba(20, 44, 62, 0.7);
+}
+
+.chip[data-active='true'] {
+  border-color: rgba(53, 208, 245, 0.5);
+  background: rgba(24, 80, 104, 0.55);
+  color: #bdf0ff;
+  box-shadow: 0 0 16px -4px rgba(53, 208, 245, 0.45), inset 0 0 12px -8px rgba(53, 208, 245, 0.6);
+}
+
+.chip[data-active='true'][data-tone='warm'] {
+  border-color: rgba(255, 200, 107, 0.5);
+  background: rgba(90, 62, 20, 0.5);
+  color: #ffe1ab;
+  box-shadow: 0 0 16px -4px rgba(255, 200, 107, 0.4);
+}
+
+/* ---------- 分隔 ---------- */
+.hr {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line-strong), transparent);
+  margin: 12px 0;
+}
+
+/* ---------- 动画 ---------- */
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes flow-dash {
+  to {
+    stroke-dashoffset: -120;
+  }
+}

@@ -1,0 +1,195 @@
+{
+ "version": 1,
+ "file": "wind-gfs-20261031-06z-63fcddec.bin",
+ "bytes": 3501549,
+ "header": {
+  "magic": "AFLW1",
+  "generated": "2026-10-31T14:37:35Z",
+  "source": "NOAA/NCEP GFS 0.25° · NOMADS filter (UGRD/VGRD/TMP)",
+  "cycle": "2026-10-31T06:00Z",
+  "encoding": "float16",
+  "channels": [
+   "u",
+   "v",
+   "cat",
+   "temp"
+  ],
+  "units": {
+   "u": "m/s",
+   "v": "m/s",
+   "cat": "0-1 (Ellrod TI1)",
+   "temp": "K"
+  },
+  "grid": {
+   "nLat": 121,
+   "nLon": 241,
+   "latMin": -90.0,
+   "latMax": 90.0,
+   "lonMin": 0.0,
+   "lonMax": 360.0,
+   "latOrder": "ascending",
+   "lonOrder": "ascending",
+   "wrapLon": true
+  },
+  "levels": [
+   {
+    "hPa": 200,
+    "fl": 387
+   },
+   {
+    "hPa": 250,
+    "fl": 340
+   },
+   {
+    "hPa": 300,
+    "fl": 301
+   }
+  ],
+  "steps": [
+   {
+    "hour": 0,
+    "validTime": "2026-10-31T06:00:00Z"
+   },
+   {
+    "hour": 6,
+    "validTime": "2026-10-31T12:00:00Z"
+   },
+   {
+    "hour": 12,
+    "validTime": "2026-10-31T18:00:00Z"
+   },
+   {
+    "hour": 24,
+    "validTime": "2026-11-01T06:00:00Z"
+   },
+   {
+    "hour": 36,
+    "validTime": "2026-11-01T18:00:00Z"
+   }
+  ],
+  "layout": "step-major, then level, then lat (asc), then lon (asc), RGBA float16",
+  "stats": [
+   {
+    "hour": 0,
+    "level": 200,
+    "maxWind": 86.7,
+    "meanWind": 22.9,
+    "maxCat": 1.0,
+    "hotFrac": 0.0329
+   },
+   {
+    "hour": 0,
+    "level": 250,
+    "maxWind": 90.7,
+    "meanWind": 22.8,
+    "maxCat": 1.0,
+    "hotFrac": 0.0298
+   },
+   {
+    "hour": 0,
+    "level": 300,
+    "maxWind": 72.9,
+    "meanWind": 21.3,
+    "maxCat": 1.0,
+    "hotFrac": 0.0284
+   },
+   {
+    "hour": 6,
+    "level": 200,
+    "maxWind": 87.5,
+    "meanWind": 22.9,
+    "maxCat": 1.0,
+    "hotFrac": 0.0341
+   },
+   {
+    "hour": 6,
+    "level": 250,
+    "maxWind": 82.7,
+    "meanWind": 23.0,
+    "maxCat": 1.0,
+    "hotFrac": 0.0322
+   },
+   {
+    "hour": 6,
+    "level": 300,
+    "maxWind": 76.0,
+    "meanWind": 21.4,
+    "maxCat": 1.0,
+    "hotFrac": 0.0273
+   },
+   {
+    "hour": 12,
+    "level": 200,
+    "maxWind": 92.4,
+    "meanWind": 22.6,
+    "maxCat": 1.0,
+    "hotFrac": 0.031
+   },
+   {
+    "hour": 12,
+    "level": 250,
+    "maxWind": 89.7,
+    "meanWind": 22.7,
+    "maxCat": 1.0,
+    "hotFrac": 0.0306
+   },
+   {
+    "hour": 12,
+    "level": 300,
+    "maxWind": 84.8,
+    "meanWind": 21.3,
+    "maxCat": 1.0,
+    "hotFrac": 0.0291
+   },
+   {
+    "hour": 24,
+    "level": 200,
+    "maxWind": 101.1,
+    "meanWind": 22.2,
+    "maxCat": 1.0,
+    "hotFrac": 0.0269
+   },
+   {
+    "hour": 24,
+    "level": 250,
+    "maxWind": 102.0,
+    "meanWind": 22.5,
+    "maxCat": 1.0,
+    "hotFrac": 0.0279
+   },
+   {
+    "hour": 24,
+    "level": 300,
+    "maxWind": 92.1,
+    "meanWind": 21.2,
+    "maxCat": 1.0,
+    "hotFrac": 0.027
+   },
+   {
+    "hour": 36,
+    "level": 200,
+    "maxWind": 85.6,
+    "meanWind": 21.5,
+    "maxCat": 1.0,
+    "hotFrac": 0.0297
+   },
+   {
+    "hour": 36,
+    "level": 250,
+    "maxWind": 92.2,
+    "meanWind": 21.7,
+    "maxCat": 1.0,
+    "hotFrac": 0.0329
+   },
+   {
+    "hour": 36,
+    "level": 300,
+    "maxWind": 87.1,
+    "meanWind": 20.6,
+    "maxCat": 1.0,
+    "hotFrac": 0.0288
+   }
+  ],
+  "catMethod": "Ellrod TI1 = horizontal deformation × vertical wind shear; normalised to 0-1 at the 99.5th percentile of the field"
+ }
+}
