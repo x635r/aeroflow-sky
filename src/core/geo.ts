@@ -1,9 +1,21 @@
 /**
  * 球面几何工具
  * ---------------------------------------------------------------------------
- * 全部使用「纬度/经度（度）→ 单位球面向量」的约定：
- *   x = cosφ·cosλ, y = sinφ, z = cosφ·sinλ
- * 与 three.js 的 Y-up 世界坐标一致，因此向量可直接喂给渲染层。
+ * 坐标约定（必须与 three.js 相机手性一致，否则地球会东西镜像）：
+ *
+ *   x = cosφ·cosλ
+ *   y = sinφ
+ *   z = −cosφ·sinλ        ← 负号是关键
+ *
+ * 为什么是 −sin：
+ *   three.js 相机看向自身的 −Z，屏幕右方向 = cross(worldUp, camBackward)。
+ *   相机站在 +X 轴上（经度 0°）看向原点时，屏幕右 = (0, 0, −1)。
+ *   若用 z = +sinλ，则 +90°E 的世界坐标 z = +1，与屏幕右方向反向，
+ *   于是「东」被画在屏幕左侧——整个地球东西镜像。
+ *   改用 −sinλ 后，+90°E → z = −1 = 屏幕右，方向正确。
+ *
+ * 该符号只影响「经纬 → 世界坐标」的映射，不改变任何球面几何量
+ * （距离、方位角、大圆插值都在经纬空间计算，与手性无关）。
  */
 
 export const DEG = Math.PI / 180;
@@ -27,7 +39,7 @@ export function toVec3(lat: number, lon: number, radius = 1): Vec3 {
   const phi = lat * DEG;
   const lam = lon * DEG;
   const c = Math.cos(phi);
-  return [radius * c * Math.cos(lam), radius * Math.sin(phi), radius * c * Math.sin(lam)];
+  return [radius * c * Math.cos(lam), radius * Math.sin(phi), -radius * c * Math.sin(lam)];
 }
 
 export function fromVec3(v: Vec3): LatLon {
@@ -35,7 +47,7 @@ export function fromVec3(v: Vec3): LatLon {
   const r = Math.hypot(x, y, z) || 1;
   return {
     lat: Math.asin(Math.max(-1, Math.min(1, y / r))) * RAD,
-    lon: normalizeLon(Math.atan2(z, x) * RAD),
+    lon: normalizeLon(Math.atan2(-z, x) * RAD),
   };
 }
 
@@ -118,13 +130,20 @@ export function bearingAt(a: Vec3, b: Vec3): number {
 
 /**
  * 在球面点 p 处的局部切平面基：east 指向东，north 指向北。
+ *
+ * 符号必须与 toVec3 的 z = −sinλ 约定配套。逐项验算（lat=30°, lon=100°）：
+ *   ∂p/∂λ ∝ (−sinλ, 0, −cosλ) 为「经度增大方向」
+ *   cross(+Y, up) = (cosλ, 0, −sinλ) 与之同向 → 这是正确的 east
+ *   cross(up, east) 再给出 north
+ * 若把 east 写成 cross(up, +Y)，风的东向分量会整体反向，
+ * 顺风就被算成逆风——物理结论会整个翻过来。
  */
 export function tangentBasis(p: Vec3): { east: Vec3; north: Vec3; up: Vec3 } {
   const up = normalize(p);
-  // 北极方向在世界 +Y
   let east = cross([0, 1, 0], up);
   if (length(east) < 1e-9) {
-    east = [1, 0, 0]; // 极点处任取
+    // 极点：经度退化，任取一个与 up 正交的切向，保证基仍然正交
+    east = [0, 0, -1];
   }
   east = normalize(east);
   const north = normalize(cross(up, east));

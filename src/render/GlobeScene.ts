@@ -155,6 +155,36 @@ export class GlobeScene {
       stepPos: this.currentStepPos,
       camera: this.camera.position.toArray().map((v) => +v.toFixed(3)),
     });
+
+    /**
+     * 经纬度 → 屏幕归一化坐标。
+     *
+     * 用 camera.project() 而不是自己算点积：投影矩阵是判据的唯一真相。
+     * 自己推导基向量时若带着同样的符号错误，就会「验证通过」却依然是错的。
+     * x ∈ [-1, 1]，-1 = 屏幕最左，+1 = 最右；z > 1 表示在相机后方。
+     */
+    w.__aeroProbe = (lat: number, lon: number) => {
+      const v = new THREE.Vector3(...toVec3(lat, lon, 1));
+      v.project(this.camera);
+      return { x: +v.x.toFixed(4), y: +v.y.toFixed(4), z: +v.z.toFixed(4) };
+    };
+
+    /** 把相机放到指定经纬度正上方，用于可复现的镜像断言 */
+    w.__aeroLookFrom = (lat: number, lon: number, dist = 3.05) => {
+      const p = toVec3(lat, lon, dist);
+      this.camera.position.set(p[0], p[1], p[2]);
+      this.controls.target.set(0, 0, 0);
+      // 先同步 controls 的内部状态，否则下一次 update() 会用旧的球坐标把相机拽回去
+      this.controls.update();
+      this.camera.lookAt(0, 0, 0);
+      this.renderer.render(this.scene, this.camera);
+      return {
+        lat,
+        lon,
+        dist,
+        camera: this.camera.position.toArray().map((v) => +v.toFixed(3)),
+      };
+    };
   }
 
   private buildStaticScene(): void {

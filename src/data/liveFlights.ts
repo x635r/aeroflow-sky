@@ -17,7 +17,14 @@
 import type { WindField } from '../data/windField';
 import { sampleWind, pressureToLevelPos } from '../data/windField';
 import { aircraftById, type AircraftProfile, solveWindTriangle, msToKmh } from '../core/atmos';
-import { initialBearing, greatCircleDistance } from '../core/geo';
+import {
+  initialBearing,
+  greatCircleDistance,
+  toVec3,
+  fromVec3,
+  slerp,
+  type Vec3,
+} from '../core/geo';
 
 export type LiveFlight = {
   callsign: string;
@@ -163,30 +170,11 @@ export function simulateFlights(field: WindField, stepPos: number, count = 14): 
   return out;
 }
 
-// 避免顶部引入过多符号，这里局部引用
+// 复用 core/geo 的球面实现，避免这里出现第二套（且可能符号不一致的）坐标约定。
 const sphere = {
-  toVec3: (lat: number, lon: number): [number, number, number] => {
-    const phi = (lat * Math.PI) / 180;
-    const lam = (lon * Math.PI) / 180;
-    const c = Math.cos(phi);
-    return [c * Math.cos(lam), Math.sin(phi), c * Math.sin(lam)];
-  },
-  fromVec3: (v: [number, number, number]): { lat: number; lon: number } => {
-    const [x, y, z] = v;
-    const r = Math.hypot(x, y, z) || 1;
-    let lon = (Math.atan2(z, x) * 180) / Math.PI;
-    if (lon > 180) lon -= 360;
-    return { lat: (Math.asin(y / r) * 180) / Math.PI, lon };
-  },
-  slerp: (a: [number, number, number], b: [number, number, number], t: number): [number, number, number] => {
-    const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    const omega = Math.acos(Math.max(-1, Math.min(1, dot)));
-    if (omega < 1e-6) return a;
-    const so = Math.sin(omega);
-    const s0 = Math.sin((1 - t) * omega) / so;
-    const s1 = Math.sin(t * omega) / so;
-    return [a[0] * s0 + b[0] * s1, a[1] * s0 + b[1] * s1, a[2] * s0 + b[2] * s1];
-  },
+  toVec3: (lat: number, lon: number) => toVec3(lat, lon, 1),
+  fromVec3: (v: readonly [number, number, number]) => fromVec3(v),
+  slerp: (a: Vec3, b: Vec3, t: number) => slerp(a, b, t),
 };
 
 export type FetchOptions = {

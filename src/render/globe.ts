@@ -9,16 +9,20 @@
  */
 
 import * as THREE from 'three';
+import { toVec3 } from '../core/geo';
 
 export const EARTH_RADIUS = 1;
 
 /**
  * 自建球体几何：显式指定 UV = (lon01, lat01)。
  *
- * three.js 默认 SphereGeometry 的 u 轴是「lon = 180 − 360u」，
- * 与等距圆柱贴图常用的「u = (lon + 180) / 360」正好镜像。
- * 由于本站的地表纹理、粒子拖尾缓冲、风场采样三者共用同一套经纬索引，
- * 这里直接构造一套自洽的 UV，避免任何一处需要偷偷翻转。
+ * 顶点坐标必须与 core/geo.ts 的 toVec3 完全一致的约定：
+ *   x = cosφ·cosλ,  y = sinφ,  z = −cosφ·sinλ
+ *
+ * 不能直接用 three.js 的 SphereGeometry：它的 u 轴是 lon = 180 − 360u，
+ * 与本项目的等距圆柱贴图（u = (lon+180)/360）正好镜像。
+ * 地表纹理、粒子拖尾缓冲、风场采样三者共用同一套经纬索引，
+ * 任何一处偷偷翻转都会造成层间错位，所以这里直接构造自洽的几何。
  */
 export function createEquirectSphere(radius: number, lonSeg = 160, latSeg = 96): THREE.BufferGeometry {
   const positions: number[] = [];
@@ -29,16 +33,11 @@ export function createEquirectSphere(radius: number, lonSeg = 160, latSeg = 96):
   for (let iy = 0; iy <= latSeg; iy++) {
     const lat01 = iy / latSeg;
     const lat = -90 + lat01 * 180;
-    const phi = (lat * Math.PI) / 180;
-    const cosPhi = Math.cos(phi);
-    const sinPhi = Math.sin(phi);
     for (let ix = 0; ix <= lonSeg; ix++) {
       const lon01 = ix / lonSeg;
       const lon = -180 + lon01 * 360;
-      const lam = (lon * Math.PI) / 180;
-      const x = radius * cosPhi * Math.cos(lam);
-      const y = radius * sinPhi;
-      const z = radius * cosPhi * Math.sin(lam);
+      // 直接复用 core/geo 的 toVec3，杜绝这里出现第二套符号约定
+      const [x, y, z] = toVec3(lat, lon, radius);
       positions.push(x, y, z);
       normals.push(x / radius, y / radius, z / radius);
       uvs.push(lon01, lat01);
@@ -52,7 +51,9 @@ export function createEquirectSphere(radius: number, lonSeg = 160, latSeg = 96):
       const b = a + 1;
       const c = a + row;
       const d = c + 1;
-      indices.push(a, c, b, b, c, d);
+      // 绕序决定正面朝向：z 取负后需要同样翻转三角形绕序，
+      // 否则法线朝内、球体变成「从里面看」
+      indices.push(a, b, c, b, d, c);
     }
   }
 
@@ -247,16 +248,11 @@ export function createStarfield(count = 3200, radius = 60): THREE.Points {
 /** 经纬网线框（可选，作为数据坐标参考） */
 export function createGraticule(radius = 1.001, stepDeg = 30, color = 0x2a6b8a): THREE.LineSegments {
   const pts: number[] = [];
-  const step = (stepDeg * Math.PI) / 180;
 
   const push = (lat: number, lon: number) => {
-    const phi = (lat * Math.PI) / 180;
-    const lam = (lon * Math.PI) / 180;
-    pts.push(
-      radius * Math.cos(phi) * Math.cos(lam),
-      radius * Math.sin(phi),
-      radius * Math.cos(phi) * Math.sin(lam),
-    );
+    // 与 toVec3 同一约定（z 取负），否则经纬网会与大陆错位
+    const v = toVec3(lat, lon, radius);
+    pts.push(v[0], v[1], v[2]);
   };
 
   for (let lat = -60; lat <= 60; lat += stepDeg) {
@@ -271,7 +267,6 @@ export function createGraticule(radius = 1.001, stepDeg = 30, color = 0x2a6b8a):
       push(lat + 2, lon);
     }
   }
-  void step;
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
