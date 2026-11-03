@@ -14,6 +14,7 @@ import { createRouteLine, createTurbulenceTubes, createAirportMarker, createAirc
 import { createAirportLayer, type AirportLayer } from './airportLayer';
 import type { Airport } from '../state/store';
 import { disposeObject3D, disposeScene } from './dispose';
+import { detectDevice, type DeviceProfile } from './deviceProfile';
 import { toVec3, fromVec3, slerp } from '../core/geo';
 import type { WindField } from '../data/windField';
 import { createWindTexture } from '../render/windTexture';
@@ -87,8 +88,9 @@ export class GlobeScene {
     this.container = container;
     this.cb = callbacks;
 
-    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    this.quality = isMobile ? 'medium' : 'high';
+    // 设备分级：决定像素比、粒子数、拖尾分辨率与装饰层
+    this.profile = detectDevice();
+    this.quality = this.profile.tier === 'low' ? 'medium' : 'high';
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -96,7 +98,7 @@ export class GlobeScene {
       powerPreference: 'high-performance',
       stencil: false,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.6 : 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.profile.pixelRatio));
     this.renderer.setSize(container.clientWidth, container.clientHeight, false);
     this.renderer.setClearColor(0x03060c, 1);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -203,11 +205,15 @@ export class GlobeScene {
   }
 
   private buildStaticScene(): void {
-    this.starfield = createStarfield(this.quality === 'low' ? 1400 : 3000);
-    this.scene.add(this.starfield);
+    // 低端设备省掉星空与大气辉光：它们各自的片元开销不小，
+    // 而地球与急流才是产品本体
+    if (this.profile.decorativeLayers) {
+      this.starfield = createStarfield(this.quality === 'low' ? 1400 : 3000);
+      this.scene.add(this.starfield);
 
-    this.atmosphere = createAtmosphere(1.032);
-    this.scene.add(this.atmosphere);
+      this.atmosphere = createAtmosphere(1.032);
+      this.scene.add(this.atmosphere);
+    }
 
     this.graticule = createGraticule(1.0015, 30);
     this.graticule.visible = false;
@@ -216,9 +222,10 @@ export class GlobeScene {
 
   async loadLand(polygons: LandPolygon[]): Promise<void> {
     if (this.disposedFlag) return;
+    const texW = this.profile.tier === 'low' ? 2048 : this.profile.tier === 'medium' ? 3072 : 4096;
     const tex = rasterizeLand(polygons, {
-      width: this.quality === 'low' ? 2048 : 4096,
-      height: this.quality === 'low' ? 1024 : 2048,
+      width: texW,
+      height: texW / 2,
     });
     const texture = new THREE.CanvasTexture(tex);
     // 这张纹理是「遮罩 + 明度」而不是照片，按线性解释才不会被 sRGB 解码压暗
@@ -242,7 +249,7 @@ export class GlobeScene {
     this.windTex = createWindTexture(field);
     this.windTex.update(this.currentLevelPos, this.currentStepPos);
 
-    this.jet = new JetParticles(this.renderer, this.windTex.texture);
+    this.jet = new JetParticles(this.renderer, this.windTex.texture, this.profile);
     this.jet.group.visible = this.visibleLayers.jet;
     this.scene.add(this.jet.group);
   }
@@ -468,7 +475,8 @@ export class GlobeScene {
       this.pointerInside = true;
     };
 
-    this.onCanvasPointerLeave = () => {
+    this.onCanvasPointerLeave = (e?: PointerEvent) => {
+      if (e) this.activePointers.delete(e.pointerId);
       this.pointerInside = false;
       // 在画布外抬起时 pointerup 不会触发（或触发在外部），清掉残留的按下状态，
       // 否则下一次在别处轻点可能被误判为一次拾取
@@ -476,16 +484,31 @@ export class GlobeScene {
     };
 
     this.onCanvasPointerDown = (e: PointerEvent) => {
+      this.activePointers.add(e.pointerId);
+      // 双指手势是缩放/旋转，不该被当成点击
+      if (this.activePointers.size > 1) {
+        this.dragStart = null;
+        return;
+      }
       this.dragStart = { x: e.clientX, y: e.clientY, t: performance.now() };
     };
 
     this.onCanvasPointerUp = (e: PointerEvent) => {
+      this.activePointers.delete(e.pointerId);
       const ds = this.dragStart;
       this.dragStart = null;
       if (!ds) return;
+
       const moved = Math.hypot(e.clientX - ds.x, e.clientY - ds.y);
       const dt = performance.now() - ds.t;
-      if (moved >= 6 || dt >= 400) return;
+
+      // 触控与鼠标的容差必须分开：
+      // 手指按下时的抖动普遍有 8–12px，用桌面的 6px 阈值会让手机上
+      // 几乎无法轻点（每次都被判成拖拽旋转）。
+      const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
+      const moveTol = isTouch ? 14 : 6;
+      const timeTol = isTouch ? 700 : 400;
+      if (moved >= moveTol || dt >= timeTol) return;
 
       // 机场点优先：点中了给机场，没点中退化成经纬度
       const ap = this.pickAirport(e.clientX, e.clientY);
@@ -508,7 +531,7 @@ export class GlobeScene {
     };
 
     el.addEventListener('pointermove', this.onCanvasPointerMove);
-    el.addEventListener('pointerleave', this.onCanvasPointerLeave);
+    el.addEventListener('pointerleave', (e) => this.onCanvasPointerLeave(e));
     el.addEventListener('pointerdown', this.onCanvasPointerDown);
     el.addEventListener('pointerup', this.onCanvasPointerUp);
     el.addEventListener('pointercancel', this.onCanvasPointerLeave);
@@ -538,7 +561,7 @@ export class GlobeScene {
   }
 
   private onCanvasPointerMove: (e: PointerEvent) => void = () => {};
-  private onCanvasPointerLeave: () => void = () => {};
+  private onCanvasPointerLeave: (e?: PointerEvent) => void = () => {};
   private onCanvasPointerDown: (e: PointerEvent) => void = () => {};
   private onCanvasPointerUp: (e: PointerEvent) => void = () => {};
   private onContextLost: (e: Event) => void = () => {};
@@ -546,6 +569,9 @@ export class GlobeScene {
   private onResize: () => void = () => {};
   private resizeObserver: ResizeObserver | null = null;
   private disposedFlag = false;
+  readonly profile: DeviceProfile;
+  /** 当前按下的指针集合，用于区分单指点击与双指手势 */
+  private activePointers = new Set<number>();
   private keepTextures = new Set<THREE.Texture>();
   private aircraftMarkerTrail: Array<{ x: number; y: number; z: number }> = [];
 

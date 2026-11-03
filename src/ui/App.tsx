@@ -11,6 +11,7 @@ import { LiveFlightsPanel } from './panels/LiveFlightsPanel';
 import { TurbulencePanel } from './panels/TurbulencePanel';
 import { FlightDetailPanel } from './panels/FlightDetailPanel';
 import { RulerPanel } from './panels/RulerPanel';
+import { MobileSheet, type MobileTab } from './components/MobileSheet';
 import { RouteProfile } from './panels/RouteProfile';
 import { LoadingScreen } from './components/LoadingScreen';
 import { levelPosOf } from '../state/store';
@@ -23,6 +24,15 @@ export function App() {
   const [loadProgress, setLoadProgress] = useState(0);
   const [bootDone, setBootDone] = useState(false);
   const cursorRef = useRef<HTMLDivElement>(null);
+  // 移动端抽屉的当前标签（桌面端不生效）
+  const [mobileTab, setMobileTab] = useState<MobileTab>('result');
+  const [isMobile, setIsMobile] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia(
+        '(max-width: 760px), ((hover: none) and (pointer: coarse) and (max-width: 1024px))',
+      ).matches,
+  );
   const [profileCursor, setProfileCursor] = useState<number | null>(null);
 
   const loading = useStore((s) => s.loading);
@@ -216,6 +226,25 @@ export function App() {
     sceneRef.current?.setRulerPoints(rulerPoints);
   }, [rulerPoints]);
 
+  // ---------- 窄屏检测 ----------
+  // reactive：既覆盖首帧（可能已经窄屏），也覆盖后续旋转/分屏。
+  // 用 syncIsMobile() 在挂载时立刻读一次，避免首帧按桌面渲染后闪一下。
+  useEffect(() => {
+    // 与 deviceProfile 保持一致：窄屏 **或** 触控优先的平板/横屏手机。
+    // 纯看宽度会让 iPad 竖屏（768）落进桌面布局，那里 7 个固定面板必然挤压。
+    const mq = window.matchMedia('(max-width: 760px), ((hover: none) and (pointer: coarse) and (max-width: 1024px))');
+    const apply = () => setIsMobile(mq.matches);
+    apply();
+
+    // 老 Safari 只支持 addListener；两者都试，避免一处失败导致整个 effect 中断
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', apply);
+      return () => mq.removeEventListener('change', apply);
+    }
+    mq.addListener(apply);
+    return () => mq.removeListener(apply);
+  }, []);
+
   // ---------- 指针跟随 ----------
   // 用 ref 直接改 transform，不走 React state：指针每次移动都 setState
   // 会让整棵 UI 树（7 个面板）每帧重渲染。
@@ -287,7 +316,7 @@ export function App() {
 
 
   return (
-    <div className="app">
+    <div className="app" data-mobile={isMobile} data-sheet-open={isMobile && mobileTab !== null}>
       <div className="globe-host" ref={hostRef} />
 
       <div className="ui-layer">
@@ -335,21 +364,61 @@ export function App() {
           </div>
         </div>
 
-        <ControlPanel />
-        <ResultPanel
-          result={result}
-          fromCode={from?.iata ?? '—'}
-          toCode={to?.iata ?? '—'}
-        />
-        <WindLegend />
-        <LiveFlightsPanel />
-        <TurbulencePanel />
-        <RulerPanel />
-        {selectedFlight && <FlightDetailPanel />}
-        <TimeBar />
+        {/* ---------- 桌面布局：面板绝对定位在四角 ---------- */}
+        {!isMobile && (
+          <>
+            <ControlPanel />
+            <ResultPanel
+              result={result}
+              fromCode={from?.iata ?? '—'}
+              toCode={to?.iata ?? '—'}
+            />
+            <WindLegend />
+            <LiveFlightsPanel />
+            <TurbulencePanel />
+            <RulerPanel />
+            {selectedFlight && <FlightDetailPanel />}
+            <TimeBar />
+            <ProfileDock cursorIndex={profileCursor} />
+          </>
+        )}
 
-        {/* 剖面图挂到右侧面板底部区域 */}
-        <ProfileDock cursorIndex={profileCursor} />
+        {/* ---------- 移动端：底部抽屉 + 标签页 ---------- */}
+        {isMobile && (
+          <MobileSheet active={mobileTab} onChange={setMobileTab}>
+            {mobileTab === 'route' && (
+              <>
+                <ControlPanel />
+                <RulerPanel />
+              </>
+            )}
+            {mobileTab === 'result' && (
+              <>
+                <ResultPanel
+                  result={result}
+                  fromCode={from?.iata ?? '—'}
+                  toCode={to?.iata ?? '—'}
+                />
+                <ProfileDock cursorIndex={profileCursor} inline />
+              </>
+            )}
+            {mobileTab === 'flights' && (
+              <>
+                <LiveFlightsPanel />
+                {selectedFlight && <FlightDetailPanel />}
+              </>
+            )}
+            {mobileTab === 'weather' && (
+              <>
+                <TurbulencePanel />
+                <WindLegend />
+              </>
+            )}
+          </MobileSheet>
+        )}
+
+        {/* 时间轴在两种布局下都需要 */}
+        {isMobile && <TimeBar />}
 
         {hover && <CursorCross ref={cursorRef} />}
 
@@ -365,20 +434,24 @@ export function App() {
   );
 }
 
-/** 剖面图：贴在右侧面板下方 */
-function ProfileDock({ cursorIndex }: { cursorIndex: number | null }) {
+/** 剖面图：桌面贴在右侧面板下方，移动端内联在「结果」标签里 */
+function ProfileDock({ cursorIndex, inline }: { cursorIndex: number | null; inline?: boolean }) {
   const result = useStore((s) => s.result);
   if (!result) return null;
   return (
     <div
-      className="glass"
-      style={{
-        position: 'absolute',
-        right: 22,
-        bottom: 22,
-        width: 344,
-        overflow: 'hidden',
-      }}
+      className={inline ? 'profile-dock profile-dock-inline' : 'profile-dock glass'}
+      style={
+        inline
+          ? undefined
+          : {
+              position: 'absolute',
+              right: 22,
+              bottom: 22,
+              width: 344,
+              overflow: 'hidden',
+            }
+      }
     >
       <RouteProfile points={result.optimal.points} cursorIndex={cursorIndex} />
     </div>

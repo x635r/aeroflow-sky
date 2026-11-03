@@ -475,11 +475,19 @@ input[type='range']::-moz-range-thumb {
   top: 82px;
   right: 22px;
   width: 344px;
-  max-height: calc(100vh - 500px);
-  min-height: 280px;
+  /* 右侧竖向排布：结果面板 → 湍流面板 → 剖面图。
+     各段高度必须相加不超过视口，否则会互相覆盖。 */
+  max-height: calc(100vh - 510px);
+  min-height: 220px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* 内容超出时在面板内部滚动，而不是被裁切 */
+.panel-right > .panel-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* 主数字对比 */
@@ -752,7 +760,7 @@ input[type='range']::-moz-range-thumb {
 .wind-legend {
   position: absolute;
   left: 356px;
-  bottom: 96px;
+  bottom: 138px;
   width: 224px;
   padding: 9px 12px 10px;
 }
@@ -938,45 +946,6 @@ input[type='range']::-moz-range-thumb {
   .timebar {
     width: calc(100vw - 640px);
     min-width: 320px;
-  }
-}
-
-@media (max-width: 760px) {
-  .topbar {
-    padding: 12px 14px;
-  }
-  .brand-text h1 {
-    font-size: 14px;
-  }
-  .brand-text p {
-    display: none;
-  }
-  .panel-left,
-  .panel-right {
-    position: absolute;
-    left: 10px;
-    right: 10px;
-    width: auto;
-    max-height: none;
-  }
-  .panel-left {
-    top: auto;
-    bottom: 108px;
-    max-height: 40vh;
-  }
-  .panel-right {
-    display: none;
-  }
-  .timebar {
-    left: 10px;
-    right: 10px;
-    bottom: 10px;
-    width: auto;
-    min-width: 0;
-    transform: none;
-  }
-  .topbar-right .status-pill:not(:first-child) {
-    display: none;
   }
 }
 
@@ -1234,11 +1203,6 @@ input[type='range']::-moz-range-thumb {
   overflow: hidden;
 }
 
-@media (max-width: 760px) {
-  .flights-panel {
-    display: none;
-  }
-}
 
 /* ==========================================================================
    湍流预警面板
@@ -1246,10 +1210,19 @@ input[type='range']::-moz-range-thumb {
 .turb-panel {
   position: absolute;
   right: 22px;
-  bottom: 226px;
+  /* 剖面图约 200px 高，湍流面板放在它上方 */
+  bottom: 220px;
   width: 344px;
   padding: 0;
   overflow: hidden;
+  max-height: 200px;
+  display: flex;
+  flex-direction: column;
+}
+
+.turb-panel .turb-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .turb-head {
@@ -1394,7 +1367,7 @@ input[type='range']::-moz-range-thumb {
   background: rgba(255, 200, 107, 0.08);
 }
 
-@media (max-width: 1400px) {
+@media (min-width: 761px) and (max-width: 1400px) and (hover: hover) {
   .turb-panel {
     display: none;
   }
@@ -1704,7 +1677,7 @@ input[type='range']::-moz-range-thumb {
   border-top: 1px solid rgba(120, 190, 230, 0.06);
 }
 
-@media (max-width: 1400px) {
+@media (min-width: 761px) and (max-width: 1400px) and (hover: hover) {
   .flight-detail {
     display: none;
   }
@@ -1720,6 +1693,8 @@ input[type='range']::-moz-range-thumb {
   width: 226px;
   padding: 0;
   overflow: hidden;
+  /* 必须在控制面板（left:22 宽:316）右侧，356 = 22+316+18 */
+  z-index: 12;
 }
 
 .ruler-head {
@@ -1840,7 +1815,7 @@ input[type='range']::-moz-range-thumb {
   border-color: rgba(53, 208, 245, 0.45);
 }
 
-@media (max-width: 1400px) {
+@media (min-width: 761px) and (max-width: 1400px) and (hover: hover) {
   .ruler-panel {
     display: none;
   }
@@ -1900,4 +1875,372 @@ input[type='range']::-moz-range-thumb {
   line-height: 1.6;
   color: var(--text-faint);
   border-bottom: 1px solid rgba(120, 190, 230, 0.08);
+}
+
+/* ==========================================================================
+   移动端：底部抽屉 + 标签页
+   --------------------------------------------------------------------------
+   桌面端把 7 个面板绝对定位在四角。375px 宽的手机上这套布局必然堆叠，
+   之前的做法是 display:none 藏起来——结果是核心功能（推演结果、航班、
+   湍流、测距）全部不可达，产品等于废掉。
+
+   这里换成「一次只看一个面板」的抽屉：地球占满屏，底部标签切换。
+   ========================================================================== */
+
+/* 抽屉外壳在桌面端不参与布局 */
+.msheet {
+  display: none;
+}
+
+@media (max-width: 760px), ((hover: none) and (pointer: coarse) and (max-width: 1024px)) {
+  :root {
+    /* 移动端统一间距，桌面端的 22px 边距在手机上太浪费横向空间 */
+    --m-pad: 10px;
+    --m-tabbar: 46px;
+  }
+
+  /* ---- 顶栏瘦身 ---- */
+  .topbar {
+    padding: 8px var(--m-pad);
+    gap: 8px;
+  }
+
+  .brand-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+  }
+
+  .brand-text h1 {
+    font-size: 13.5px;
+  }
+
+  .brand-text p {
+    display: none;
+  }
+
+  /* 只留数据源徽标，FL/FPS 在手机上属于噪音 */
+  .topbar-right .status-pill:nth-child(2),
+  .topbar-right .status-pill:nth-child(3) {
+    display: none;
+  }
+
+  /* ---- 所有桌面面板移入抽屉，取消绝对定位 ---- */
+  .panel-left,
+  .panel-right,
+  .flights-panel,
+  .turb-panel,
+  .ruler-panel,
+  .flight-detail,
+  .profile-dock {
+    position: static !important;
+    left: auto !important;
+    right: auto !important;
+    top: auto !important;
+    bottom: auto !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    transform: none !important;
+    display: flex !important;
+    flex-direction: column;
+    border: none !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    box-shadow: none !important;
+    animation: none !important;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  /* 抽屉里不再需要面板自己的内滚动容器外框 */
+  .panel-left .panel-body,
+  .panel-right .panel-body {
+    max-height: none;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* ---- 抽屉本体 ---- */
+  .msheet {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    background: rgba(6, 14, 22, 0.94);
+    backdrop-filter: blur(26px) saturate(150%);
+    -webkit-backdrop-filter: blur(26px) saturate(150%);
+    border-top: 1px solid var(--line-strong);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -12px 40px -12px rgba(0, 0, 0, 0.9);
+    /* 收起时只露标签栏；展开时占到 62vh，仍能看到一半地球。
+       flex: none 很重要：height 在 flex 容器里会被 flex-shrink 压缩，
+       不加这一条即使写了 height: 480px 实测仍会退回 46px。 */
+    flex: none;
+    height: var(--m-tabbar);
+    transition: height 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+    /* iOS 安全区 */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    will-change: height;
+  }
+
+  /* 高度用 dvh（动态视口）而不是 vh：移动端浏览器地址栏收放时
+     vh 不会跟着变，而且某些内嵌 WebView 里 62vh 会求值为 0 */
+  /* 高度由 MobileSheet 用 innerHeight 算好写进 --sheet-h。
+     不用 vh/dvh：各 WebView 的求值差异太大（实测 62dvh 只给 240px）。 */
+  .msheet[data-expanded='true'] {
+    flex: none;
+    height: var(--sheet-h, 62vh);
+  }
+
+  .msheet-handle {
+    display: grid;
+    place-items: center;
+    height: 18px;
+    flex: 0 0 18px;
+    cursor: grab;
+  }
+
+  .msheet-grip {
+    width: 36px;
+    height: 3px;
+    border-radius: 2px;
+    background: rgba(150, 200, 225, 0.35);
+    transition: background 0.15s;
+  }
+
+  .msheet-handle:active .msheet-grip {
+    background: rgba(150, 200, 225, 0.7);
+  }
+
+  .msheet-tabs {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 2px;
+    padding: 0 8px;
+    height: 28px;
+    align-items: stretch;
+  }
+
+  .msheet-tab {
+    flex: 1;
+    padding: 0 4px;
+    border-radius: 7px 7px 0 0;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text-faint);
+    position: relative;
+    transition: color 0.15s, background 0.15s;
+    white-space: nowrap;
+  }
+
+  .msheet-tab[data-active='true'] {
+    color: #bdf0ff;
+    background: rgba(53, 208, 245, 0.1);
+  }
+
+  .msheet-tab[data-active='true']::after {
+    content: '';
+    position: absolute;
+    left: 18%;
+    right: 18%;
+    bottom: 0;
+    height: 2px;
+    border-radius: 2px 2px 0 0;
+    background: var(--jet);
+    box-shadow: 0 0 8px var(--jet);
+  }
+
+  .msheet-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    /* 收起状态下不显示内容，避免内容溢出到地球上方 */
+    display: none;
+  }
+
+  .msheet[data-expanded='true'] .msheet-body {
+    display: block;
+    padding-bottom: 8px;
+  }
+
+  /* ---- 时间轴：抽屉上方，避开抽屉 ---- */
+  .timebar {
+    left: var(--m-pad) !important;
+    right: var(--m-pad) !important;
+    width: auto !important;
+    min-width: 0 !important;
+    transform: none !important;
+    bottom: calc(var(--m-tabbar) + 8px + env(safe-area-inset-bottom, 0px)) !important;
+    padding: 8px 12px 10px;
+    transition: bottom 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  /* 抽屉展开时把时间轴抬到抽屉上沿之上。
+     抽屉已固定为 flex:none，高度恒等于 min(62vh,480px)，两者一致。 */
+  .app[data-sheet-open='true'] .timebar {
+    bottom: calc(var(--sheet-h, 62vh) + 8px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  /* 屏幕太矮时抽屉+时间轴会占满全屏，此时收起时间轴（动画时间仍在「气象」页可查） */
+  @media (max-height: 700px) {
+    .app[data-sheet-open='true'] .timebar {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(8px);
+      transition: opacity 0.2s, transform 0.2s;
+    }
+  }
+
+  .timebar-now {
+    font-size: 12.5px;
+  }
+
+  .timebar-sub {
+    font-size: 8.5px;
+  }
+
+  /* 时间轴上的刻度文字在窄屏会挤成一团，只保留首尾 */
+  .track-tick:nth-child(n + 3):not(:last-child) span {
+    display: none;
+  }
+
+  /* ---- 风速图例：手机上移进「气象」标签，不再浮在地球上 ---- */
+  .wind-legend {
+    position: static !important;
+    width: auto !important;
+    border: none !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    box-shadow: none !important;
+    padding: 10px 12px !important;
+  }
+
+  /* 测距面板同理 */
+  .ruler-panel {
+    padding: 0 !important;
+  }
+
+  .turb-panel {
+    padding: 0 !important;
+  }
+
+  .flights-panel {
+    padding: 0 !important;
+  }
+
+  .flight-detail {
+    padding: 0 !important;
+  }
+}
+
+/* 更矮的屏幕（横屏手机 / 小屏）进一步压缩 */
+/* 矮屏（横屏手机）由 JS 的 240 下限兜住，无需额外规则 */
+
+/* 移动端抽屉内的内联剖面 */
+.profile-dock-inline {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+/* 移动端时间轴：横屏空间紧张，压缩成单行 */
+@media (max-width: 760px), ((hover: none) and (pointer: coarse) and (max-width: 1024px)) {
+  .timebar {
+    padding: 6px 12px 7px !important;
+  }
+
+  .timebar-head {
+    margin-bottom: 5px;
+  }
+
+  .timebar-now {
+    font-size: 11.5px;
+  }
+
+  .timebar-sub {
+    font-size: 8px;
+    /* 手机上这行信息量太大，只留预报时效 */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .track {
+    height: 22px;
+  }
+
+  /* 时间轴刻度在窄屏全隐藏，只靠拖动位置表达 */
+  .track-tick span {
+    display: none;
+  }
+
+  /* 滑块加大，手指才好拖 */
+  .track-thumb {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+/* ==========================================================================
+   中等宽度（768–1180）：三栏桌面布局会挤，收敛为两栏 + 堆叠
+   --------------------------------------------------------------------------
+   iPad 竖屏 768、小笔记本 1024 落在这个区间：桌面布局能放下，
+   但 316+344+344 = 1004px 已经贴到边，没有留白也不会出错。
+   这里只调整间距与面板宽度，不改变布局范式。
+   ========================================================================== */
+@media (min-width: 761px) and (max-width: 1180px) and (hover: hover) {
+  .panel-left {
+    width: 280px;
+    left: 14px;
+    /* 航班面板在 bottom:132 处，高约 260 → 顶边约 vh-392。
+       控制面板底边必须 ≤ 那个上沿，否则两者重叠。 */
+    max-height: calc(100vh - 540px);
+  }
+
+  .panel-right {
+    width: 292px;
+    right: 14px;
+    max-height: calc(100vh - 470px);
+  }
+
+  /* 这一档高度不足以同时容纳航班面板 + 时间轴 + 剖面图，
+     必须明确谁在上面：时间轴贴底，航班面板抬到它上方。 */
+  .flights-panel {
+    width: 280px;
+    left: 14px;
+    /* 时间轴约 100px 高 + 22 底边距，再留 10px 间隙 */
+    bottom: 132px;
+    max-height: min(260px, calc(100vh - 560px));
+  }
+
+  .wind-legend {
+    left: 308px;
+    width: 200px;
+  }
+
+  /* 湍流面板与剖面图在这一档放不下，收起——数据在「结果」面板里都有 */
+  .turb-panel,
+  .profile-dock {
+    display: none !important;
+  }
+
+  .timebar {
+    width: calc(100vw - 32px);
+    max-width: 620px;
+    min-width: 0;
+    bottom: 22px;
+  }
+
+  .topbar {
+    padding: 14px 16px;
+  }
 }

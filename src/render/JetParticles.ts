@@ -22,6 +22,7 @@ import type { WindField } from '../data/windField';
 import { createLutTexture } from './windTexture';
 import { createEquirectSphere } from './globe';
 import { WIND_RAMP } from './palette';
+import type { DeviceProfile } from './deviceProfile';
 
 const SIM_VERT = /* glsl */ `
   varying vec2 vUv;
@@ -317,14 +318,19 @@ export class JetParticles {
 
   private initMaterial: THREE.ShaderMaterial;
 
-  constructor(renderer: THREE.WebGLRenderer, windTexture: THREE.DataTexture, opts?: Partial<JetParams>) {
+  constructor(
+    renderer: THREE.WebGLRenderer,
+    windTexture: THREE.DataTexture,
+    profile: DeviceProfile,
+    opts?: Partial<JetParams>,
+  ) {
     this.renderer = renderer;
     this.group = new THREE.Group();
     this.group.name = 'jet-particles';
 
-    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    // 粒子数是性能与观感的主要旋钮：移动端 256²（6.5 万），桌面 512²（26 万）
-    this.stateSize = isMobile ? 256 : 512;
+    // 粒子数是性能与观感的主要旋钮。分级由 deviceProfile 统一决定，
+    // 不再靠 UA 猜（iPadOS 会上报桌面 UA）。
+    this.stateSize = profile.particleSize;
 
     // 纹理格式与尺寸必须按设备能力收敛：
     // 4096×2048 的 RGBA16F 在低端 GPU/移动浏览器上会超过 maxTextureSize，
@@ -351,7 +357,7 @@ export class JetParticles {
     this.stateA = new THREE.WebGLRenderTarget(this.stateSize, this.stateSize, stateOpts);
     this.stateB = new THREE.WebGLRenderTarget(this.stateSize, this.stateSize, stateOpts);
 
-    let trailW = isMobile ? 2048 : 4096;
+    let trailW = profile.trailWidth;
     while (trailW > 512 && trailW > maxTex) trailW = Math.floor(trailW / 2);
     const trailH = Math.floor(trailW / 2);
     const trailOpts: THREE.RenderTargetOptions = {
