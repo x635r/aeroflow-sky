@@ -107,6 +107,12 @@ export function AirportPicker({ role, value, airports, onChange }: Props) {
       />
       {value && !open && <div className="airport-meta">{value.city}</div>}
 
+      {open && matches.length === 0 && query.trim() !== '' && (
+        <div className="airport-suggest" role="status">
+          <div className="airport-empty">未找到「{query.trim()}」</div>
+        </div>
+      )}
+
       {open && matches.length > 0 && (
         <div className="airport-suggest" role="listbox">
           {matches.map((a, i) => (

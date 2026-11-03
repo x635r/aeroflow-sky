@@ -285,6 +285,9 @@ export class JetParticles {
 
   private renderer: THREE.WebGLRenderer;
   private stateSize: number;
+  /** 实际分配的拖尾缓冲宽度（可能低于目标值） */
+  readonly trailWidth: number;
+  readonly particleCount: number;
   private stateA: THREE.WebGLRenderTarget;
   private stateB: THREE.WebGLRenderTarget;
   private trailA: THREE.WebGLRenderTarget;
@@ -320,10 +323,22 @@ export class JetParticles {
     this.group.name = 'jet-particles';
 
     const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    this.stateSize = opts?.pointSize && opts.pointSize > 4 ? 512 : isMobile ? 256 : 512;
+    // 粒子数是性能与观感的主要旋钮：移动端 256²（6.5 万），桌面 512²（26 万）
+    this.stateSize = isMobile ? 256 : 512;
+
+    // 纹理格式与尺寸必须按设备能力收敛：
+    // 4096×2048 的 RGBA16F 在低端 GPU/移动浏览器上会超过 maxTextureSize，
+    // 创建出来是 incomplete framebuffer —— three 只打警告，表现为整个急流层
+    // 全黑且没有任何降级。HalfFloat 也需要扩展支持。
+    const caps = renderer.capabilities;
+    const maxTex = caps.maxTextureSize ?? 2048;
+    const halfFloatOK =
+      renderer.extensions.has('EXT_color_buffer_half_float') ||
+      renderer.extensions.has('EXT_color_buffer_float');
+    const rtType = halfFloatOK ? THREE.HalfFloatType : THREE.ByteType;
 
     const stateOpts: THREE.RenderTargetOptions = {
-      type: THREE.HalfFloatType,
+      type: rtType,
       format: THREE.RGBAFormat,
       minFilter: THREE.NearestFilter,
       magFilter: THREE.NearestFilter,
@@ -336,10 +351,11 @@ export class JetParticles {
     this.stateA = new THREE.WebGLRenderTarget(this.stateSize, this.stateSize, stateOpts);
     this.stateB = new THREE.WebGLRenderTarget(this.stateSize, this.stateSize, stateOpts);
 
-    const trailW = isMobile ? 2048 : 4096;
-    const trailH = trailW / 2;
+    let trailW = isMobile ? 2048 : 4096;
+    while (trailW > 512 && trailW > maxTex) trailW = Math.floor(trailW / 2);
+    const trailH = Math.floor(trailW / 2);
     const trailOpts: THREE.RenderTargetOptions = {
-      type: THREE.HalfFloatType,
+      type: rtType,
       format: THREE.RGBAFormat,
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
@@ -471,6 +487,9 @@ export class JetParticles {
     this.sphere.renderOrder = 2;
     this.group.add(this.sphere);
 
+    this.trailWidth = trailW;
+    this.particleCount = this.stateSize * this.stateSize;
+
     if (opts) this.applyParams(opts as JetParams);
     this.reset();
   }
@@ -487,6 +506,10 @@ export class JetParticles {
     const r = this.renderer;
     const prevTarget = r.getRenderTarget();
     const prevAutoClear = r.autoClear;
+    // 清屏色是 renderer 的全局状态，用完必须还原，
+    // 否则主画布会用我们临时设的透明黑清屏
+    const prevClear = r.getClearColor(new THREE.Color()).clone();
+    const prevAlpha = r.getClearAlpha();
 
     r.setRenderTarget(this.stateA);
     r.autoClear = true;
@@ -501,6 +524,7 @@ export class JetParticles {
 
     r.setRenderTarget(prevTarget);
     r.autoClear = prevAutoClear;
+    r.setClearColor(prevClear, prevAlpha);
 
     this.simMaterial.uniforms.uSeed.value = seed;
     this.simMaterial.uniforms.uState.value = this.stateA.texture;
@@ -546,6 +570,8 @@ export class JetParticles {
     const r = this.renderer;
     const prevTarget = r.getRenderTarget();
     const prevAutoClear = r.autoClear;
+    const prevClear = r.getClearColor(new THREE.Color()).clone();
+    const prevAlpha = r.getClearAlpha();
 
     // 1) 平流 + 画点：在「一次显示帧」内跑 SUBSTEPS 个子步。
     //
@@ -604,7 +630,7 @@ export class JetParticles {
 
     r.setRenderTarget(prevTarget);
     r.autoClear = prevAutoClear;
-    r.setClearColor(0x03060c, 1);
+    r.setClearColor(prevClear, prevAlpha);
 
     // 4) 交换拖尾缓冲
     const tmpTrail = this.trailA;
@@ -634,12 +660,19 @@ export class JetParticles {
     this.trailA.dispose();
     this.trailB.dispose();
     this.lut.dispose();
+    this.initMaterial.dispose();
     this.simMaterial.dispose();
     this.pointMaterial.dispose();
     this.fadeMaterial.dispose();
     this.compositeMaterial.dispose();
     (this.points.geometry as THREE.BufferGeometry).dispose();
     (this.sphere.geometry as THREE.BufferGeometry).dispose();
+    // quadGeo 被 quad 与 fadeQuad 共用，两处都要释放
+    (this.quad.geometry as THREE.BufferGeometry).dispose();
+    for (const child of this.fadeScene.children) {
+      const m = child as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+    }
   }
 }
 

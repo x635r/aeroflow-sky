@@ -1884,3 +1884,10 @@ input[type='range']::-moz-range-thumb {
   box-shadow: 0 0 8px var(--jet);
   animation: pulse-soft 1.6s ease-in-out infinite;
 }
+
+.airport-empty {
+  padding: 12px 10px;
+  text-align: center;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}

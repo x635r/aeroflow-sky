@@ -93,9 +93,12 @@ const DEMO_ROUTES: Array<{ from: string; to: string; fromLL: [number, number]; t
 function enrich(
   field: WindField,
   stepPos: number,
+  pressureHpa: number,
   base: Omit<LiveFlight, 'windAlong' | 'cat' | 'tas'>,
 ): LiveFlight {
-  const levelPos = pressureToLevelPos(field, 250);
+  // 必须用调用方当前选择的高度层，否则列表里的顺风分量与地图上的
+  // 粒子层不是同一层——「同一份数据可以互相对照」这个前提就破了。
+  const levelPos = pressureToLevelPos(field, pressureHpa);
   const w = sampleWind(field, base.lat, base.lon, { levelPos, stepPos });
   const tas = Math.max(base.groundSpeed - w.speed * 0.3, 150);
   const tri = solveWindTriangle(base.track, tas, w);
@@ -108,7 +111,12 @@ function enrich(
 }
 
 /** 合成演示航班：沿真实大圆铺开，位置随机但确定（同一时刻结果一致） */
-export function simulateFlights(field: WindField, stepPos: number, count = 14): LiveFlight[] {
+export function simulateFlights(
+  field: WindField,
+  stepPos: number,
+  pressureHpa: number,
+  count = 14,
+): LiveFlight[] {
   const out: LiveFlight[] = [];
   const seedBase = Math.floor(Date.now() / 120_000);
 
@@ -140,7 +148,7 @@ export function simulateFlights(field: WindField, stepPos: number, count = 14): 
     );
 
     const track = initialBearing(p, ahead);
-    const levelPos = pressureToLevelPos(field, 250);
+    const levelPos = pressureToLevelPos(field, pressureHpa);
     const w = sampleWind(field, p.lat, p.lon, { levelPos, stepPos });
     const tas = ac.cruiseMach * 295;
     const tri = solveWindTriangle(track, tas, w);
@@ -179,6 +187,8 @@ const sphere = {
 
 export type FetchOptions = {
   endpoint?: string;
+  /** 用于取消过期请求（快速切换航线/连点刷新时避免旧响应覆盖新响应） */
+  signal?: AbortSignal;
   /** 只保留巡航高度的航班（米），过滤掉地面与进近 */
   minAltitudeM?: number;
   limit?: number;
@@ -191,6 +201,7 @@ export type FetchOptions = {
 export async function fetchLiveFlights(
   field: WindField,
   stepPos: number,
+  pressureHpa: number,
   opts: FetchOptions = {},
 ): Promise<LiveSnapshot> {
   const endpoint = opts.endpoint ?? '/api/flights';
@@ -198,7 +209,10 @@ export async function fetchLiveFlights(
   const limit = opts.limit ?? 24;
 
   try {
-    const res = await fetch(endpoint, { headers: { accept: 'application/json' } });
+    const res = await fetch(endpoint, {
+      headers: { accept: 'application/json' },
+      signal: opts.signal,
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = (await res.json()) as ProxyResponse;
     if (!Array.isArray(data.states) || data.states.length === 0) {
@@ -207,9 +221,14 @@ export async function fetchLiveFlights(
     const flights = data.states
       .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lon) && s.alt >= minAlt)
       .slice(0, limit)
-      .map((s) =>
-        enrich(field, stepPos, {
-          callsign: (s.callsign || '').trim() || '?????',
+      .map((s, i) =>
+        enrich(field, stepPos, pressureHpa, {
+          // 无呼号的航班用坐标派生的唯一标识，不能统一成 '?????'：
+          // 那样多条航班共享同一 callsign，选中一艘会同时高亮多行，
+          // 详情面板也会显示错误的那一架。
+          callsign:
+            (s.callsign || '').trim() ||
+            `NOID${i}·${s.lat.toFixed(1)}${s.lon.toFixed(1)}`,
           lat: s.lat,
           lon: s.lon,
           altitudeM: s.alt,
@@ -231,7 +250,7 @@ export async function fetchLiveFlights(
     return {
       source: 'simulated',
       fetchedAt: Date.now(),
-      flights: simulateFlights(field, stepPos, limit),
+      flights: simulateFlights(field, stepPos, pressureHpa, limit),
       note: `未能连接实时 ADS-B 代理（${(e as Error).message}），以下为基于真实风场与真实机场对的模拟航班。`,
     };
   }

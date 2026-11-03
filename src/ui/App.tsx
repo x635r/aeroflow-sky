@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useRef, useState } from 'react';
 import { GlobeScene } from '../render/GlobeScene';
 import { useStore } from '../state/store';
 import { loadWindField } from '../data/windField';
@@ -22,7 +22,7 @@ export function App() {
   const [sceneReady, setSceneReady] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
   const [bootDone, setBootDone] = useState(false);
-  const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
+  const cursorRef = useRef<HTMLDivElement>(null);
   const [profileCursor, setProfileCursor] = useState<number | null>(null);
 
   const loading = useStore((s) => s.loading);
@@ -55,8 +55,14 @@ export function App() {
     const scene = new GlobeScene(host, {
       onHover: (lat, lon) => setHover({ lat, lon }),
       onPickAirport: (ap) => {
-        // 点机场：按当前起降状态填入起点或终点
         const s = useStore.getState();
+        // 测距模式优先：围着枢纽点测距时，点到的全是机场，
+        // 若这里不判断 rulerMode，测距就永远拿不到点
+        if (s.rulerMode) {
+          s.addRulerPoint({ lat: ap.lat, lon: ap.lon, label: ap.iata });
+          return;
+        }
+        // 点机场：按当前起降状态填入起点或终点
         if (!s.from || (s.from && s.to)) s.setEndpoints(ap, s.to === ap ? null : s.to);
         else s.setEndpoints(s.from, ap);
       },
@@ -114,8 +120,15 @@ export function App() {
         const land = (await landRes.json()) as { polygons: LandPolygon[] };
         const ap = (await apRes.json()) as { airports: ReturnType<typeof useStore.getState>['airports'] };
 
+        // StrictMode 下会「挂载 → 卸载 → 再挂载」：第一次 cleanup 已 dispose，
+        // 但第一次的异步 boot 仍在跑。必须在每个 await 后重新检查，
+        // 否则会把整套 GPU 资源（jet 拖尾 ≈134MB）建到已销毁的 renderer 上。
+        if (cancelled) return;
+
         setLoad({ stage: 'static', progress: 0.9 });
         await scene.loadLand(land.polygons);
+        if (cancelled) return;
+
         await scene.attachWind(wind);
         if (cancelled) return;
 
@@ -203,11 +216,26 @@ export function App() {
     sceneRef.current?.setRulerPoints(rulerPoints);
   }, [rulerPoints]);
 
-  // ---------- 悬停卡片位置 ----------
+  // ---------- 指针跟随 ----------
+  // 用 ref 直接改 transform，不走 React state：指针每次移动都 setState
+  // 会让整棵 UI 树（7 个面板）每帧重渲染。
   useEffect(() => {
-    const onMove = (e: PointerEvent) => setHoverPos({ x: e.clientX, y: e.clientY });
-    window.addEventListener('pointermove', onMove);
-    return () => window.removeEventListener('pointermove', onMove);
+    const onMove = (e: PointerEvent) => {
+      const el = cursorRef.current;
+      if (!el) return;
+      el.style.transform = `translate3d(${e.clientX}px, ${e.clientY}px, 0)`;
+      el.style.opacity = '1';
+    };
+    const onLeave = () => {
+      const el = cursorRef.current;
+      if (el) el.style.opacity = '0';
+    };
+    window.addEventListener('pointermove', onMove, { passive: true });
+    window.addEventListener('pointerleave', onLeave);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerleave', onLeave);
+    };
   }, []);
 
   // ---------- 剖面游标：跟随相机前进进度 ----------
@@ -216,35 +244,47 @@ export function App() {
       setProfileCursor(null);
       return;
     }
-    // 用"离相机最近的航路点"作为游标，让剖面与地球视角联动
+    // 用「离相机最近的航路点」作为游标，让剖面与地球视角联动。
     let raf = 0;
+    let lastSet = -1;
+    let lastAt = 0;
     const tick = () => {
+      raf = requestAnimationFrame(tick);
       const scene = sceneRef.current;
-      if (scene && result.optimal.points.length) {
-        const cam = scene.getCameraLatLon();
-        let bestI = 0;
-        let bestD = Infinity;
-        const pts = result.optimal.points;
-        for (let i = 0; i < pts.length; i += 1) {
-          const dLat = pts[i].lat - cam.lat;
-          let dLon = pts[i].lon - cam.lon;
-          while (dLon > 180) dLon -= 360;
-          while (dLon < -180) dLon += 360;
-          const d = dLat * dLat + dLon * dLon * Math.cos((pts[i].lat * Math.PI) / 180) ** 2;
-          if (d < bestD) {
-            bestD = d;
-            bestI = i;
-          }
+      if (!scene || !result.optimal.points.length) return;
+
+      // 12Hz 足以表达「相机在航路哪一段」。每帧扫 100+ 点纯属浪费，
+      // 而且 cursorIndex 一变 RouteProfile 就要重算 36 段 bandData 与两条 path。
+      const now = performance.now();
+      if (now - lastAt < 80) return;
+      lastAt = now;
+
+      const cam = scene.getCameraLatLon();
+      const pts = result.optimal.points;
+      let bestI = 0;
+      let bestD = Infinity;
+      for (let i = 0; i < pts.length; i += 1) {
+        const dLat = pts[i].lat - cam.lat;
+        let dLon = pts[i].lon - cam.lon;
+        while (dLon > 180) dLon -= 360;
+        while (dLon < -180) dLon += 360;
+        const d = dLat * dLat + dLon * dLon * Math.cos((pts[i].lat * Math.PI) / 180) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          bestI = i;
         }
+      }
+      // 索引没变就不 setState
+      if (bestI !== lastSet) {
+        lastSet = bestI;
         setProfileCursor(bestI);
       }
-      raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [result]);
 
-  const showHoverCard = Boolean(hoverPos && hover);
+
 
   return (
     <div className="app">
@@ -311,7 +351,7 @@ export function App() {
         {/* 剖面图挂到右侧面板底部区域 */}
         <ProfileDock cursorIndex={profileCursor} />
 
-        {showHoverCard && <HoverCard pos={hoverPos!} />}
+        {hover && <CursorCross ref={cursorRef} />}
 
         {showIntro && <IntroOverlay onDismiss={dismissIntro} />}
       </div>
@@ -345,20 +385,24 @@ function ProfileDock({ cursorIndex }: { cursorIndex: number | null }) {
   );
 }
 
-function HoverCard({ pos }: { pos: { x: number; y: number } }) {
-  // 已由 WindLegend 展示；这里只保留指针跟随的轻量十字标记
+const CursorCross = forwardRef<HTMLDivElement>(function CursorCross(_props, ref) {
+  // 位置由父组件的指针监听直接写 transform，这里既不收 props 也不触发渲染
   return (
     <div
+      ref={ref}
       style={{
         position: 'fixed',
-        left: pos.x,
-        top: pos.y,
+        left: 0,
+        top: 0,
         width: 18,
         height: 18,
         marginLeft: -9,
         marginTop: -9,
         pointerEvents: 'none',
         zIndex: 55,
+        opacity: 0,
+        transition: 'opacity 0.15s',
+        willChange: 'transform',
       }}
       aria-hidden
     >
@@ -368,7 +412,7 @@ function HoverCard({ pos }: { pos: { x: number; y: number } }) {
       </svg>
     </div>
   );
-}
+});
 
 function IntroOverlay({ onDismiss }: { onDismiss: () => void }) {
   return (

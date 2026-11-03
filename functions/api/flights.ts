@@ -14,10 +14,6 @@
  * 会使用 OAuth2 客户端凭据模式以获得更高的速率上限。
  */
 
-type Pb = {
-  fetch(input: string, init?: RequestInit): Promise<Response>;
-};
-
 type Env = {
   OPENSKY_CLIENT_ID?: string;
   OPENSKY_CLIENT_SECRET?: string;
@@ -34,19 +30,38 @@ type Normalized = {
 };
 
 const CACHE_TTL = 15; // 秒；ADS-B 数据本身刷新也就这个量级
+const CACHE_AEROFLOW = 'aeroflow-flights-v1'; // 改版本号可强制失效旧缓存
+/** 上游超时：上游挂起时不能把整个 Function 拖到平台墙钟上限 */
+const UPSTREAM_TIMEOUT_MS = 6000;
 
-async function withCache(pb: Pb, key: string, fn: () => Promise<Response>): Promise<Response> {
-  const cache = await caches.open('aeroflow-flights');
+/**
+ * 边缘缓存包装。
+ *
+ * 关键点：必须用 `res.clone()` 而不是 `new Response(res.body, res)`。
+ * 后者与原响应**共享同一条 ReadableStream**，`cache.put()` 读取后
+ * 原始 body 变成 "already read"，前端拿到的是一个无法 json() 的空响应，
+ * 于是永远落到「代理不可用」分支、退回模拟数据。
+ * `clone()` 内部会 tee 流，两个 body 都能独立读取。
+ */
+async function withCache(key: string, fn: () => Promise<Response>): Promise<Response> {
+  const cache = await caches.open(CACHE_AEROFLOW);
   const hit = await cache.match(key);
   if (hit) {
     const age = Date.now() - Number(hit.headers.get('x-fetched-at') ?? 0);
     if (age < CACHE_TTL * 1000) return hit;
   }
+
   const res = await fn();
   if (res.ok) {
-    const clone = new Response(res.body, res);
-    clone.headers.set('x-fetched-at', String(Date.now()));
-    await cache.put(key, clone);
+    // clone 会 tee 出第二条流给缓存，原响应保持可读
+    const forCache = res.clone();
+    const tagged = new Response(forCache.body, {
+      status: forCache.status,
+      headers: new Headers(forCache.headers),
+    });
+    tagged.headers.set('x-fetched-at', String(Date.now()));
+    // 缓存写入失败不应影响本次响应
+    await cache.put(key, tagged).catch(() => {});
   }
   return res;
 }
@@ -66,7 +81,10 @@ function json(data: unknown, status = 200): Response {
 async function fromAdsbLol(): Promise<Normalized[]> {
   // 北大西洋 + 西欧的空域中心，半径 250 nm 覆盖主要跨洋走廊
   const url = 'https://api.adsb.lol/v2/lat/50/lon/-30/dist/250';
-  const res = await fetch(url, { headers: { accept: 'application/json' } });
+  const res = await fetch(url, {
+    headers: { accept: 'application/json' },
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
   if (!res.ok) throw new Error(`adsb.lol HTTP ${res.status}`);
   const data = (await res.json()) as {
     ac?: Array<{
@@ -104,11 +122,15 @@ async function openskyToken(env: Env): Promise<string | null> {
     client_id: env.OPENSKY_CLIENT_ID,
     client_secret: env.OPENSKY_CLIENT_SECRET,
   });
-  const res = await fetch('https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body,
-  });
+  const res = await fetch(
+    'https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token',
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    },
+  );
   if (!res.ok) return null;
   const j = (await res.json()) as { access_token?: string };
   return j.access_token ?? null;
@@ -121,7 +143,10 @@ async function fromOpenSky(env: Env): Promise<Normalized[]> {
   const token = await openskyToken(env);
   if (token) headers.authorization = `Bearer ${token}`;
 
-  const res = await fetch(url, { headers });
+  const res = await fetch(url, {
+    headers,
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
   if (!res.ok) throw new Error(`OpenSky HTTP ${res.status}`);
   const data = (await res.json()) as { states?: Array<Array<unknown>> | null };
   const out: Normalized[] = [];
@@ -173,7 +198,7 @@ export const onRequestGet = async (context: { request: Request; env: Env }): Pro
     method: 'GET',
   });
 
-  return withCache(context.platform as unknown as Pb, key.url, async () => {
+  return withCache(key.url, async () => {
     for (const name of order) {
       const r =
         name === 'opensky'

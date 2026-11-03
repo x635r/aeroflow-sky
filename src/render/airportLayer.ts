@@ -30,7 +30,12 @@ export type AirportLayer = {
   /** 高亮某个机场（IATA），null 取消高亮 */
   setHighlight: (iata: string | null) => void;
   /** 屏幕空间拾取：返回最近的机场 */
-  pick: (normalizedX: number, normalizedY: number, camera: THREE.Camera) => Airport | null;
+  pick: (
+    normalizedX: number,
+    normalizedY: number,
+    camera: THREE.Camera,
+    viewportHeight?: number,
+  ) => Airport | null;
   dispose: () => void;
 };
 
@@ -232,10 +237,19 @@ export function createAirportLayer(
       const idx = iata != null ? idxByIata.get(iata) : undefined;
       uniforms.uHighlight.value = idx ?? -1;
     },
-    pick(nx: number, ny: number, camera: THREE.Camera): Airport | null {
-      // 只有真正可见的机场才参与拾取（背面的点不该被选中）
+    /**
+     * 屏幕空间拾取。
+     *
+     * 阈值必须按**像素**给而不是写死一个 NDC 常数：NDC 全宽是 2，
+     * 0.0022 NDC 在 1920px 画布上只有约 2 像素——而渲染出来的点本身就有
+     * 2–3 像素，于是用户几乎永远点不中机场，每次都落到「吸附最近机场」
+     * 分支，把几千公里外的机场静默设成目的地。
+     */
+    pick(nx: number, ny: number, camera: THREE.Camera, viewportHeight = 900): Airport | null {
       let best = -1;
-      let bestD = 0.0022; // 屏幕空间阈值（NDC 单位）
+      // 12 像素的容差，折算成 NDC
+      const pixelTol = 12;
+      let bestD = (pixelTol / viewportHeight) * 2;
       let bestDepth = Infinity;
 
       for (let i = 0; i < n; i++) {

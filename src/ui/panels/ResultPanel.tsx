@@ -141,7 +141,9 @@ export function ResultPanel({ result, fromCode, toCode }: Props) {
             <span className="metric-label">湍流航段占比</span>
             <span
               className="metric-value"
-              data-tone={optimal.catFraction > 0.25 ? 'warn' : optimal.catFraction > 0.5 ? 'bad' : undefined}
+              data-tone={
+                optimal.catFraction > 0.5 ? 'bad' : optimal.catFraction > 0.25 ? 'warn' : undefined
+              }
             >
               {(optimal.catFraction * 100).toFixed(0)}
               <small>%</small>

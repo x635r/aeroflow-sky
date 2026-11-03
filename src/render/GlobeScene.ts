@@ -13,6 +13,7 @@ import { JetParticles, type JetParams } from './JetParticles';
 import { createRouteLine, createTurbulenceTubes, createAirportMarker, createAircraftMarker, type RouteVisuals } from './routes';
 import { createAirportLayer, type AirportLayer } from './airportLayer';
 import type { Airport } from '../state/store';
+import { disposeObject3D, disposeScene } from './dispose';
 import { toVec3, fromVec3, slerp } from '../core/geo';
 import type { WindField } from '../data/windField';
 import { createWindTexture } from '../render/windTexture';
@@ -138,6 +139,14 @@ export class GlobeScene {
    * `__aeroStep(n)` 同步推进 n 帧，既用于回归验证，也用于生成审查截图。
    * 生产环境里它不产生任何开销，因为只有被显式调用时才执行。
    */
+  private applyAdaptiveQuality(): void {
+    const k = this.adaptiveDownscale;
+    this.jet?.applyParams({
+      pointSize: 1.9 * k,
+      intensity: Math.max(0.55, k),
+    });
+  }
+
   private exposeDebugHooks(): void {
     const w = window as unknown as Record<string, unknown>;
     w.__aeroStep = (n = 1, dt = 1 / 60) => {
@@ -206,6 +215,7 @@ export class GlobeScene {
   }
 
   async loadLand(polygons: LandPolygon[]): Promise<void> {
+    if (this.disposedFlag) return;
     const tex = rasterizeLand(polygons, {
       width: this.quality === 'low' ? 2048 : 4096,
       height: this.quality === 'low' ? 1024 : 2048,
@@ -220,6 +230,7 @@ export class GlobeScene {
     texture.magFilter = THREE.LinearFilter;
     texture.generateMipmaps = true;
 
+    this.keepTextures.add(texture);
     this.earth = createEarth(texture);
     this.earth.renderOrder = 0;
     this.scene.add(this.earth);
@@ -227,6 +238,7 @@ export class GlobeScene {
   }
 
   async attachWind(field: WindField): Promise<void> {
+    if (this.disposedFlag) return;
     this.windTex = createWindTexture(field);
     this.windTex.update(this.currentLevelPos, this.currentStepPos);
 
@@ -237,6 +249,7 @@ export class GlobeScene {
 
   /** 装载机场点图层。可在 loadLand 之后、任意时刻调用。 */
   attachAirports(airports: Airport[]): void {
+    if (this.disposedFlag) return;
     if (this.airportLayer) {
       this.scene.remove(this.airportLayer.group);
       this.airportLayer.dispose();
@@ -253,12 +266,8 @@ export class GlobeScene {
    */
   setRulerPoints(points: Array<{ lat: number; lon: number }>): void {
     if (this.rulerGroup) {
+      disposeObject3D(this.rulerGroup);
       this.scene.remove(this.rulerGroup);
-      this.rulerGroup.traverse((o) => {
-        const m = o as THREE.Mesh;
-        if (m.geometry) m.geometry.dispose();
-        if (m.material) (m.material as THREE.Material).dispose();
-      });
       this.rulerGroup = null;
     }
     if (points.length === 0) return;
@@ -365,15 +374,17 @@ export class GlobeScene {
     this.rhumbVisuals = null;
 
     if (this.turbulence) {
+      disposeObject3D(this.turbulence);
       this.scene.remove(this.turbulence);
-      this.turbulence.traverse((o) => {
-        const m = o as THREE.Mesh;
-        if (m.geometry) m.geometry.dispose();
-        if (m.material) (m.material as THREE.Material).dispose();
-      });
       this.turbulence = null;
     }
 
+    // Group.clear() 只摘引用，不释放 GPU 资源。
+    // 每次重算航线都会新建 2 个机场标记，拖动时间轴时每秒数十次，
+    // 不 dispose 会在几分钟内吃光显存导致 context lost。
+    for (const child of [...this.markers.children]) {
+      disposeObject3D(child);
+    }
     this.markers.clear();
   }
 
@@ -450,44 +461,63 @@ export class GlobeScene {
   private attachEvents(): void {
     const el = this.renderer.domElement;
 
-    this.pointerMove = (e) => {
+    this.onCanvasPointerMove = (e: PointerEvent) => {
       const r = el.getBoundingClientRect();
       this.pointer.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       this.pointer.y = -((e.clientY - r.top) / r.height) * 2 + 1;
       this.pointerInside = true;
     };
 
-    el.addEventListener('pointermove', (e) => this.pointerMove(e));
-    el.addEventListener('pointerleave', () => {
+    this.onCanvasPointerLeave = () => {
       this.pointerInside = false;
-    });
+      // 在画布外抬起时 pointerup 不会触发（或触发在外部），清掉残留的按下状态，
+      // 否则下一次在别处轻点可能被误判为一次拾取
+      this.dragStart = null;
+    };
 
-    el.addEventListener('pointerdown', (e) => {
+    this.onCanvasPointerDown = (e: PointerEvent) => {
       this.dragStart = { x: e.clientX, y: e.clientY, t: performance.now() };
-    });
+    };
 
-    el.addEventListener('pointerup', (e) => {
+    this.onCanvasPointerUp = (e: PointerEvent) => {
       const ds = this.dragStart;
       this.dragStart = null;
       if (!ds) return;
       const moved = Math.hypot(e.clientX - ds.x, e.clientY - ds.y);
       const dt = performance.now() - ds.t;
-      // 轻点而非拖动 → 视为拾取
-      if (moved < 6 && dt < 400) {
-        // 机场点优先：点中了就给机场，没点中再退化成经纬度
-        const ap = this.pickAirport(e.clientX, e.clientY);
-        if (ap) {
-          this.cb.onPickAirport?.(ap);
-          return;
-        }
-        const hit = this.pickSphere(e.clientX, e.clientY);
-        if (hit) this.cb.onPick?.(hit.lat, hit.lon);
+      if (moved >= 6 || dt >= 400) return;
+
+      // 机场点优先：点中了给机场，没点中退化成经纬度
+      const ap = this.pickAirport(e.clientX, e.clientY);
+      if (ap) {
+        this.cb.onPickAirport?.(ap);
+        return;
       }
-    });
+      const hit = this.pickSphere(e.clientX, e.clientY);
+      if (hit) this.cb.onPick?.(hit.lat, hit.lon);
+    };
+
+    // WebGL 上下文丢失：移动端常驻大纹理时很容易发生，
+    // 不处理就是永久黑屏。这里只负责阻止默认行为并通知上层，
+    // 实际恢复由浏览器在 restore 后重建资源。
+    this.onContextLost = (e: Event) => {
+      e.preventDefault();
+      this.running = false;
+      cancelAnimationFrame(this.raf);
+      console.warn('[globe] WebGL context lost — 等待恢复');
+    };
+
+    el.addEventListener('pointermove', this.onCanvasPointerMove);
+    el.addEventListener('pointerleave', this.onCanvasPointerLeave);
+    el.addEventListener('pointerdown', this.onCanvasPointerDown);
+    el.addEventListener('pointerup', this.onCanvasPointerUp);
+    el.addEventListener('pointercancel', this.onCanvasPointerLeave);
+    el.addEventListener('webglcontextlost', this.onContextLost);
 
     this.onResize = () => {
-      const w = this.container.clientWidth;
-      const h = this.container.clientHeight;
+      // 容器可能尚未布局完成（宽高为 0），除零会让投影矩阵变成 NaN
+      const w = Math.max(1, this.container.clientWidth);
+      const h = Math.max(1, this.container.clientHeight);
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w, h, false);
@@ -496,11 +526,28 @@ export class GlobeScene {
       this.rhumbVisuals?.setResolution(w, h);
     };
     window.addEventListener('resize', this.onResize);
+
+    // 容器尺寸变化不一定触发 window resize（CSS 变化、侧栏展开等），
+    // 用 ResizeObserver 兜住这种情况
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(() => this.onResize());
+      this.resizeObserver.observe(this.container);
+    }
+
     this.onResize();
   }
 
-  private pointerMove: (e: PointerEvent) => void = () => {};
+  private onCanvasPointerMove: (e: PointerEvent) => void = () => {};
+  private onCanvasPointerLeave: () => void = () => {};
+  private onCanvasPointerDown: (e: PointerEvent) => void = () => {};
+  private onCanvasPointerUp: (e: PointerEvent) => void = () => {};
+  private onContextLost: (e: Event) => void = () => {};
+  private onWindowPointerMove: (e: PointerEvent) => void = () => {};
   private onResize: () => void = () => {};
+  private resizeObserver: ResizeObserver | null = null;
+  private disposedFlag = false;
+  private keepTextures = new Set<THREE.Texture>();
+  private aircraftMarkerTrail: Array<{ x: number; y: number; z: number }> = [];
 
   /** 屏幕坐标 → 最近机场（若无则 null） */
   private pickAirport(clientX: number, clientY: number): Airport | null {
@@ -508,7 +555,7 @@ export class GlobeScene {
     const r = this.renderer.domElement.getBoundingClientRect();
     const nx = ((clientX - r.left) / r.width) * 2 - 1;
     const ny = -((clientY - r.top) / r.height) * 2 + 1;
-    return this.airportLayer.pick(nx, ny, this.camera);
+    return this.airportLayer.pick(nx, ny, this.camera, this.renderer.domElement.clientHeight);
   }
 
   private pickSphere(clientX: number, clientY: number): { lat: number; lon: number } | null {
@@ -591,29 +638,72 @@ export class GlobeScene {
         fps: Math.round(fps),
         drawCalls: info.render.calls,
         triangles: info.render.triangles,
-        particleCount: this.jet ? 512 * 512 : 0,
+        // 用 JetParticles 的实际配置（移动端 256²，桌面 512²）
+        particleCount: this.jet ? this.jet.particleCount : 0,
       });
 
-      // 帧率过低时自动降粒子分辨率（通过降低点大小与不透明度近似）
+      // 帧率自适应：低于 26fps 降质，高于 52fps 且还有余量时回升。
+      // 早期版本只降不升，一次卡顿后会永久停在最低画质。
       if (fps < 26 && this.adaptiveDownscale > 0.55) {
-        this.adaptiveDownscale -= 0.1;
-        this.jet?.applyParams({
-          pointSize: 1.7 * this.adaptiveDownscale,
-          intensity: Math.max(0.5, this.adaptiveDownscale),
-        });
+        this.adaptiveDownscale = Math.max(0.55, this.adaptiveDownscale - 0.1);
+        this.applyAdaptiveQuality();
+      } else if (fps > 52 && this.adaptiveDownscale < 1) {
+        this.adaptiveDownscale = Math.min(1, this.adaptiveDownscale + 0.05);
+        this.applyAdaptiveQuality();
       }
     }
   }
 
   dispose(): void {
+    if (this.disposedFlag) return;
+    this.disposedFlag = true;
+
     this.running = false;
     cancelAnimationFrame(this.raf);
+
+    // 具名 handler 才能解绑（匿名函数注册的监听无法移除）
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('pointermove', this.onWindowPointerMove);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+
+    const el = this.renderer.domElement;
+    el.removeEventListener('pointermove', this.onCanvasPointerMove);
+    el.removeEventListener('pointerleave', this.onCanvasPointerLeave);
+    el.removeEventListener('pointerdown', this.onCanvasPointerDown);
+    el.removeEventListener('pointerup', this.onCanvasPointerUp);
+    el.removeEventListener('webglcontextlost', this.onContextLost);
+
     this.clearRoutes();
+    this.aircraftMarkerTrail.length = 0;
+
     this.jet?.dispose();
     this.airportLayer?.dispose();
     this.windTex?.dispose();
     this.controls.dispose();
+
+    // 地表纹理 >40MB（4096×2048 + mipmap），必须显式释放
+    disposeObject3D(this.earth);
+    disposeObject3D(this.atmosphere);
+    disposeObject3D(this.starfield);
+    disposeObject3D(this.graticule);
+    disposeObject3D(this.aircraftMarker);
+    this.earth = null;
+    this.atmosphere = null;
+    this.starfield = null;
+    this.graticule = null;
+    this.aircraftMarker = null;
+
+    // 兜底：把场景里剩下的都扫一遍
+    disposeScene(this.scene, this.keepTextures);
+
+    // 调试钩子持有整张 renderer 与纹理的闭包引用，不删会阻止 GC
+    const w = window as unknown as Record<string, unknown>;
+    delete w.__aeroStep;
+    delete w.__aeroState;
+    delete w.__aeroProbe;
+    delete w.__aeroLookFrom;
+
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement === this.container) {
       this.container.removeChild(this.renderer.domElement);

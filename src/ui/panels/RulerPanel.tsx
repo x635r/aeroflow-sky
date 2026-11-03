@@ -154,7 +154,9 @@ export function RulerPanel() {
                 };
                 const a = nearest(points[0]);
                 const b = nearest(points[1]);
-                if (a && b) s.setEndpoints(a, b);
+                // 两点吸附到同一机场会导致 0 距离 0 时长的空推演，
+                // 界面上表现为「成功了但全是 0」，比不响应更困惑
+                if (a && b && a.iata !== b.iata) s.setEndpoints(a, b);
               }}
             >
               用这两点推演

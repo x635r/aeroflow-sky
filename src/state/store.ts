@@ -239,7 +239,9 @@ export const useStore = create<State>((set, get) => ({
       set({ result: res, planning: false });
     } catch (e) {
       console.error('[plan] 推演失败', e);
-      set({ planning: false });
+      // 必须清空：否则界面会显示「新机场 + 上一次的航线数据」，
+      // 标题是新的起降点，数字却是旧的，比直接报错更误导。
+      set({ planning: false, result: null });
     }
   },
 
@@ -248,7 +250,18 @@ export const useStore = create<State>((set, get) => ({
   selectFlight: (callsign) =>
     set((s) => ({ selectedFlight: s.selectedFlight === callsign ? null : callsign })),
 
-  setLiveSnapshot: (liveSnapshot) => set({ liveSnapshot }),
+  setLiveSnapshot: (liveSnapshot) =>
+    set((s) => {
+      // 刷新后选中的航班可能已经落地/换了数据源，
+      // 此时要清掉选中态，否则详情面板空白但高亮残留
+      const stillExists =
+        !s.selectedFlight ||
+        (liveSnapshot?.flights.some((f) => f.callsign === s.selectedFlight) ?? false);
+      return {
+        liveSnapshot,
+        selectedFlight: stillExists ? s.selectedFlight : null,
+      };
+    }),
   setLiveLoading: (liveLoading) => set({ liveLoading }),
 
   selectedFlightData: () => {

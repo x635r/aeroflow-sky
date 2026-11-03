@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../state/store';
 import { fetchLiveFlights, summarizeFlights, typeLabel, type LiveFlight } from '../../data/liveFlights';
 import { timeToStepPos } from '../../data/windField';
@@ -14,9 +14,13 @@ import { CAT_RAMP, sampleRamp, toCss } from '../../render/palette';
  * 数据来源永远显式标注：真实 ADS-B 用绿色徽标，模拟用琥珀色徽标。
  * 绝不把模拟数据包装成「实时」，这是可信度的底线。
  */
+/** 模块级常量：避免 snap 为 null 时每次渲染都新建数组（会让下游 memo 全部失效） */
+const EMPTY_FLIGHTS: LiveFlight[] = [];
+
 export function LiveFlightsPanel() {
   const field = useStore((s) => s.field);
   const timeMs = useStore((s) => s.timeMs);
+  const pressureHpa = useStore((s) => s.pressureHpa);
   const snap = useStore((s) => s.liveSnapshot);
   const loading = useStore((s) => s.liveLoading);
   const setSnap = useStore((s) => s.setLiveSnapshot);
@@ -25,26 +29,55 @@ export function LiveFlightsPanel() {
   const selectFlight = useStore((s) => s.selectFlight);
   const [collapsed, setCollapsed] = useState(false);
   const [filter, setFilter] = useState<'all' | 'tail' | 'head'>('all');
+  const [reloadKey, setReloadKey] = useState(0);
 
   const stepPos = useMemo(() => (field ? timeToStepPos(field, timeMs) : 0), [field, timeMs]);
 
-  const load = () => {
-    if (!field) return;
-    setLoading(true);
-    fetchLiveFlights(field, stepPos, { endpoint: '/api/flights', limit: 18 })
-      .then((s) => setSnap(s))
-      .finally(() => setLoading(false));
-  };
+  // 用 ref 保存"最新一次请求的序号"，晚到的旧响应直接丢弃。
+  // 否则快速切换高度层/连点刷新时，先发出的请求后返回，
+  // 会把旧风场的结果覆盖到新的上面。
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
-    load();
-    // 每 2 分钟刷新一次，避免打爆上游速率；真实数据本身也是分钟级
-    const id = setInterval(load, 120_000);
+    if (!field) return;
+
+    const myId = ++requestIdRef.current;
+    const controller = new AbortController();
+    setLoading(true);
+
+    fetchLiveFlights(field, stepPos, pressureHpa, {
+      endpoint: '/api/flights',
+      limit: 18,
+      signal: controller.signal,
+    })
+      .then((s) => {
+        // 只有最新一次请求才允许写回
+        if (myId === requestIdRef.current) setSnap(s);
+      })
+      .catch(() => {
+        /* 取消或失败：保留上一次快照，不覆盖 */
+      })
+      .finally(() => {
+        if (myId === requestIdRef.current) setLoading(false);
+      });
+
+    return () => {
+      controller.abort();
+    };
+    // stepPos / pressureHpa 进依赖：拖动时间轴或切高度层后，
+    // 列表里的「顺风 m/s」必须与地图上的风场保持同一口径
+  }, [field, stepPos, pressureHpa, reloadKey, setSnap, setLoading]);
+
+  // 每 2 分钟自动刷新（只依赖 field，避免与上面对 wind 变化的刷新重复触发）
+  useEffect(() => {
+    if (!field) return;
+    const id = setInterval(() => setReloadKey((k) => k + 1), 120_000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [field]);
 
-  const flights = snap?.flights ?? [];
+  const load = () => setReloadKey((k) => k + 1);
+
+  const flights = snap?.flights ?? EMPTY_FLIGHTS;
   const stats = useMemo(() => summarizeFlights(flights), [flights]);
 
   const shown = useMemo(() => {

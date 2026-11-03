@@ -21,6 +21,8 @@ export function FlightDetailPanel() {
   const selectFlight = useStore((s) => s.selectFlight);
   const field = useStore((s) => s.field);
   const timeMs = useStore((s) => s.timeMs);
+  const pressureHpa = useStore((s) => s.pressureHpa);
+  const mach = useStore((s) => s.mach);
   const setEndpoints = useStore((s) => s.setEndpoints);
   const airportsByIata = useStore((s) => s.airportsByIata);
 
@@ -32,16 +34,17 @@ export function FlightDetailPanel() {
   // 用当前风场重新解一次该点的风三角，给出与地图一致的口径
   const derived = useMemo(() => {
     if (!flight || !field) return null;
-    const levelPos = pressureToLevelPos(field, 250);
+    // 跟随用户选择的高度层与马赫数，与地图粒子层保持同一口径
+    const levelPos = pressureToLevelPos(field, pressureHpa);
     const stepPos = timeToStepPos(field, timeMs);
     const w = sampleWind(field, flight.lat, flight.lon, { levelPos, stepPos });
     const profile = aircraftById(
       /^(B77|A35|B78)/.test(flight.type) ? 'b77w' : /^(A32|B73)/.test(flight.type) ? 'b738' : 'b77w',
     );
-    const tas = machToTas(profile.cruiseMach, w.tempK);
+    const tas = machToTas(mach || profile.cruiseMach, w.tempK);
     const tri = solveWindTriangle(flight.track, tas, w);
     return { wind: w, tas, tri, profile };
-  }, [flight, field, timeMs]);
+  }, [flight, field, timeMs, pressureHpa, mach]);
 
   if (!flight) return null;
 
