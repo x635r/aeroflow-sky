@@ -108,6 +108,14 @@ functions/api/flights.ts   ADS-B 代理（带边缘缓存）
 | 海岸线 | [Natural Earth](https://www.naturalearthdata.com/) 1:50m land | 公有领域 |
 | 实时航班（可选） | OpenSky Network / adsb.lol | 见各自条款 |
 
+## 线上地址
+
+| | |
+| --- | --- |
+| 站点 | https://aeroflow-sky.pages.dev |
+| 源码 | https://github.com/x635r/aeroflow-sky |
+| 部署 | Cloudflare Pages（含 `/api/flights` Pages Function） |
+
 ## 部署
 
 静态托管即可（Cloudflare Pages 推荐）：
@@ -125,6 +133,19 @@ npm run build
 | `OPENSKY_CLIENT_SECRET` | 对应密钥 |
 
 未配置时会回退到免密钥的 adsb.lol；两者都失败则前端降级为模拟数据。
+
+### 排查上游可达性
+
+数据中心 IP 常被 ADS-B 上游限流（实测 Cloudflare GIG/FRA 节点上 OpenSky 会 6s 超时）。
+用诊断模式区分「代码问题」与「网络可达性问题」：
+
+```bash
+curl "https://aeroflow-sky.pages.dev/api/flights?debug=1"
+# → { colo: "FRA", results: [{upstream:"opensky", ok:false, error:"timeout"}, ...] }
+```
+
+代理对 adsb.lol 并发查询 6 个跨洋走廊中心（北大西洋/北美东岸/西欧/美西/日本/东南亚）
+后合并去重——单点 250nm 在低流量时段经常返回 0 架。
 
 ## 测试
 
