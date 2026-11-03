@@ -1891,3 +1891,13 @@ input[type='range']::-moz-range-thumb {
   font-size: 10.5px;
   color: var(--text-faint);
 }
+
+.fd-route-unknown {
+  display: block;
+  grid-template-columns: none;
+  padding: 9px 13px;
+  font-size: 9.5px;
+  line-height: 1.6;
+  color: var(--text-faint);
+  border-bottom: 1px solid rgba(120, 190, 230, 0.08);
+}

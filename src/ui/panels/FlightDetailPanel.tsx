@@ -55,8 +55,11 @@ export function FlightDetailPanel() {
   const catColor = toCss(sampleRamp(CAT_RAMP, Math.min(1, Math.max(0, (flight.cat - 0.2) / 0.65))));
   const speedColor = toCss(sampleRamp(WIND_RAMP, Math.min(1, (derived?.wind.speed ?? 0) / 110)));
 
-  const originAirport = flight.origin !== '—' ? airportsByIata.get(flight.origin) : undefined;
-  const destAirport = flight.destination !== '—' ? airportsByIata.get(flight.destination) : undefined;
+  // ADS-B 源不提供起降机场，用 '—' 占位；只有两端都有才显示航线行
+  const hasRoute =
+    flight.origin !== '—' && flight.destination !== '—' && flight.origin !== flight.destination;
+  const originAirport = hasRoute ? airportsByIata.get(flight.origin) : undefined;
+  const destAirport = hasRoute ? airportsByIata.get(flight.destination) : undefined;
 
   return (
     <div className="flight-detail glass-strong">
@@ -72,23 +75,30 @@ export function FlightDetailPanel() {
         </button>
       </div>
 
-      {/* 航线：起点 → 终点 */}
-      <div className="fd-route">
-        <div className="fd-endpoint">
-          <span className="mono fd-code">{flight.origin}</span>
-          <span className="fd-city">{originAirport?.city ?? '未知'}</span>
+      {/* 航线：起点 → 终点。ADS-B 本身不提供起降机场，
+          拉不到时如实说明而不是显示"未知 → 未知"。 */}
+      {hasRoute ? (
+        <div className="fd-route">
+          <div className="fd-endpoint">
+            <span className="mono fd-code">{flight.origin}</span>
+            <span className="fd-city">{originAirport?.city ?? ''}</span>
+          </div>
+          <div className="fd-route-mid">
+            <svg width="46" height="14" viewBox="0 0 46 14" aria-hidden>
+              <line x1="2" y1="7" x2="40" y2="7" stroke="rgba(120,190,230,0.35)" strokeWidth="1" strokeDasharray="3 3" />
+              <path d="M36 3l6 4-6 4" fill="none" stroke="rgba(120,190,230,0.6)" strokeWidth="1.2" strokeLinecap="round" />
+            </svg>
+          </div>
+          <div className="fd-endpoint" style={{ textAlign: 'right' }}>
+            <span className="mono fd-code">{flight.destination}</span>
+            <span className="fd-city">{destAirport?.city ?? ''}</span>
+          </div>
         </div>
-        <div className="fd-route-mid">
-          <svg width="46" height="14" viewBox="0 0 46 14" aria-hidden>
-            <line x1="2" y1="7" x2="40" y2="7" stroke="rgba(120,190,230,0.35)" strokeWidth="1" strokeDasharray="3 3" />
-            <path d="M36 3l6 4-6 4" fill="none" stroke="rgba(120,190,230,0.6)" strokeWidth="1.2" strokeLinecap="round" />
-          </svg>
+      ) : (
+        <div className="fd-route fd-route-unknown">
+          ADS-B 不提供航线信息 · 可通过下方「用此航路推演」按坐标求解
         </div>
-        <div className="fd-endpoint" style={{ textAlign: 'right' }}>
-          <span className="mono fd-code">{flight.destination}</span>
-          <span className="fd-city">{destAirport?.city ?? '未知'}</span>
-        </div>
-      </div>
+      )}
 
       {/* 核心遥测 */}
       <div className="fd-telemetry">

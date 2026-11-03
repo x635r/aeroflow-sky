@@ -212,10 +212,13 @@ export function LiveFlightsPanel() {
 
           <div className="flights-foot">
             {snap?.note ? (
+              // 只有真的发生降级时才显示原因，不做无根据的猜测
               <span style={{ color: 'var(--hot)' }}>{snap.note}</span>
+            ) : loading && !snap ? (
+              <span>正在获取航班…</span>
             ) : (
               <span>
-                {isReal ? '数据源：OpenSky / adsb.lol · 15s 边缘缓存' : '正在回退到模拟数据'}
+                {isReal ? '数据源：adsb.lol / OpenSky · 15s 边缘缓存' : '风场模拟数据'}
                 {snap && ` · ${new Date(snap.fetchedAt).toLocaleTimeString('zh-CN', { hour12: false })}`}
               </span>
             )}

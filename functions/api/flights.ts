@@ -52,7 +52,9 @@ async function withCache(key: string, fn: () => Promise<Response>): Promise<Resp
   }
 
   const res = await fn();
-  if (res.ok) {
+  // 对「成功但为空」也做短缓存（负缓存），否则每个客户端请求都会
+  // 重新打两遍上游；上游在数据中心 IP 上本来就容易限流。
+  if (res.ok || res.status === 503) {
     // clone 会 tee 出第二条流给缓存，原响应保持可读
     const forCache = res.clone();
     const tagged = new Response(forCache.body, {
@@ -78,39 +80,67 @@ function json(data: unknown, status = 200): Response {
 }
 
 /** 从 adsb.lol 的 point 查询拿一片空域（免密钥、覆盖较好） */
+/**
+ * adsb.lol 的 point 查询一次只覆盖一个圆。
+ * 单点 250nm 在低流量时段经常返回 0 架（实测 GIG 节点此刻就是 0），
+ * 所以并发查多个跨洋走廊中心再合并去重。
+ */
+const ADSB_CENTERS: Array<{ lat: number; lon: number; dist: number }> = [
+  { lat: 51, lon: -30, dist: 250 }, // 北大西洋
+  { lat: 40, lon: -60, dist: 250 }, // 北美东岸出港
+  { lat: 48, lon: 2, dist: 250 }, // 西欧
+  { lat: 40, lon: -120, dist: 250 }, // 美西
+  { lat: 35, lon: 140, dist: 250 }, // 日本
+  { lat: 1, lon: 104, dist: 250 }, // 东南亚
+];
+
 async function fromAdsbLol(): Promise<Normalized[]> {
-  // 北大西洋 + 西欧的空域中心，半径 250 nm 覆盖主要跨洋走廊
-  const url = 'https://api.adsb.lol/v2/lat/50/lon/-30/dist/250';
-  const res = await fetch(url, {
-    headers: { accept: 'application/json' },
-    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`adsb.lol HTTP ${res.status}`);
-  const data = (await res.json()) as {
-    ac?: Array<{
-      flight?: string;
-      lat?: number;
-      lon?: number;
-      alt_baro?: number | 'ground';
-      gs?: number;
-      track?: number;
-      t?: string;
-    }>;
-  };
+  const results = await Promise.allSettled(
+    ADSB_CENTERS.map(async (c) => {
+      const url = `https://api.adsb.lol/v2/lat/${c.lat}/lon/${c.lon}/dist/${c.dist}`;
+      const res = await fetch(url, {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      });
+      if (!res.ok) throw new Error(`adsb.lol HTTP ${res.status}`);
+      return (await res.json()) as {
+        ac?: Array<{
+          hex?: string;
+          flight?: string;
+          lat?: number;
+          lon?: number;
+          alt_baro?: number | 'ground';
+          gs?: number;
+          track?: number;
+          t?: string;
+        }>;
+      };
+    }),
+  );
+
+  const seen = new Set<string>();
   const out: Normalized[] = [];
-  for (const a of data.ac ?? []) {
-    if (a.alt_baro === 'ground' || typeof a.alt_baro !== 'number') continue;
-    if (typeof a.lat !== 'number' || typeof a.lon !== 'number') continue;
-    out.push({
-      callsign: (a.flight || '').trim(),
-      lat: a.lat,
-      lon: a.lon,
-      // alt_baro 是英尺
-      alt: a.alt_baro * 0.3048,
-      gs: (a.gs ?? 0) * 0.514444,
-      track: a.track ?? 0,
-      type: a.t,
-    });
+
+  for (const r of results) {
+    if (r.status !== 'fulfilled') continue;
+    for (const a of r.value.ac ?? []) {
+      if (a.alt_baro === 'ground' || typeof a.alt_baro !== 'number') continue;
+      if (typeof a.lat !== 'number' || typeof a.lon !== 'number') continue;
+      // 跨圆重叠的去重键：优先 icao24，否则坐标
+      const key = a.hex || `${a.lat.toFixed(3)},${a.lon.toFixed(3)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        // 呼号缺失时用 icao24，保证每条记录有唯一标识
+        callsign: (a.flight || '').trim() || a.hex || '',
+        lat: a.lat,
+        lon: a.lon,
+        alt: a.alt_baro * 0.3048,
+        gs: (a.gs ?? 0) * 0.514444,
+        track: a.track ?? 0,
+        type: a.t,
+      });
+    }
   }
   return out;
 }
@@ -174,6 +204,34 @@ export const onRequestGet = async (context: { request: Request; env: Env }): Pro
   const { env } = context;
   const url = new URL(context.request.url);
   const want = url.searchParams.get('source');
+  const debug = url.searchParams.get('debug') === '1';
+
+  // 诊断模式：直连各上游并回报原始结果，不走缓存。
+  // 部署在不同区域时，上游可达性会变（数据中心 IP 常被限流），
+  // 有这个模式才能区分「代码问题」和「网络问题」。
+  if (debug) {
+    const probe = async (name: string, fn: () => Promise<Normalized[]>) => {
+      const t0 = Date.now();
+      try {
+        const states = await fn();
+        return { upstream: name, ok: true, count: states.length, ms: Date.now() - t0 };
+      } catch (e) {
+        return {
+          upstream: name,
+          ok: false,
+          error: (e as Error).message || String(e),
+          ms: Date.now() - t0,
+        };
+      }
+    };
+    const results = [
+      await probe('opensky', () => fromOpenSky(env)),
+      await probe('adsblol', fromAdsbLol),
+    ];
+    return json({ debug: true, colo: context.request.cf?.colo ?? null, results }, 200);
+  }
+
+  const errors: Array<{ upstream: string; error: string }> = [];
 
   const attempt = async (
     name: 'opensky' | 'adsblol',
@@ -181,12 +239,16 @@ export const onRequestGet = async (context: { request: Request; env: Env }): Pro
   ): Promise<{ source: string; states: Normalized[] } | null> => {
     try {
       const states = await fn();
-      if (!states.length) return null;
-      // 只保留巡航高度（>7.6 km）并限制条数，减小下游负担
+      if (!states.length) {
+        errors.push({ upstream: name, error: '返回 0 架航空器（该空域当前无覆盖）' });
+        return null;
+      }
       const cruise = states.filter((s) => s.alt > 7600).slice(0, 60);
       return { source: name, states: cruise.length ? cruise : states.slice(0, 60) };
     } catch (e) {
-      console.warn(`[flights] ${name} 失败:`, (e as Error).message);
+      const msg = (e as Error).message || String(e);
+      errors.push({ upstream: name, error: msg });
+      console.warn(`[flights] ${name} 失败:`, msg);
       return null;
     }
   };
@@ -206,7 +268,10 @@ export const onRequestGet = async (context: { request: Request; env: Env }): Pro
           : await attempt('adsblol', fromAdsbLol);
       if (r) return json({ source: r.source, fetchedAt: Date.now(), states: r.states });
     }
-    return json({ source: 'unavailable', fetchedAt: Date.now(), states: [] }, 503);
+    return json(
+      { source: 'unavailable', fetchedAt: Date.now(), states: [], errors },
+      503,
+    );
   });
 };
 
