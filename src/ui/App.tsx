@@ -9,6 +9,8 @@ import { TimeBar } from './panels/TimeBar';
 import { WindLegend } from './panels/WindLegend';
 import { LiveFlightsPanel } from './panels/LiveFlightsPanel';
 import { TurbulencePanel } from './panels/TurbulencePanel';
+import { FlightDetailPanel } from './panels/FlightDetailPanel';
+import { RulerPanel } from './panels/RulerPanel';
 import { RouteProfile } from './panels/RouteProfile';
 import { LoadingScreen } from './components/LoadingScreen';
 import { levelPosOf } from '../state/store';
@@ -37,6 +39,9 @@ export function App() {
   const setFps = useStore((s) => s.setFps);
   const fps = useStore((s) => s.fps);
   const hover = useStore((s) => s.hover);
+  const showAirports = useStore((s) => s.showAirports);
+  const selectedFlight = useStore((s) => s.selectedFlight);
+  const rulerPoints = useStore((s) => s.rulerPoints);
   const showIntro = useStore((s) => s.showIntro);
   const dismissIntro = useStore((s) => s.dismissIntro);
   const recompute = useStore((s) => s.recompute);
@@ -49,9 +54,21 @@ export function App() {
 
     const scene = new GlobeScene(host, {
       onHover: (lat, lon) => setHover({ lat, lon }),
+      onPickAirport: (ap) => {
+        // 点机场：按当前起降状态填入起点或终点
+        const s = useStore.getState();
+        if (!s.from || (s.from && s.to)) s.setEndpoints(ap, s.to === ap ? null : s.to);
+        else s.setEndpoints(s.from, ap);
+      },
       onPick: (lat, lon) => {
+        const st = useStore.getState();
+        // 测距模式：把点击点交给测距工具
+        if (st.rulerMode) {
+          st.addRulerPoint({ lat, lon });
+          return;
+        }
         // 点击地球：移动最近的机场作为到达点
-        const { airports: list } = useStore.getState();
+        const { airports: list } = st;
         if (!list.length) return;
         let best = list[0];
         let bestD = Infinity;
@@ -110,6 +127,7 @@ export function App() {
           header: wind.header,
         };
         initData(wind, manifest as never, ap.airports);
+        scene.attachAirports(ap.airports);
 
         // 默认航线：如果有 JFK/LHR 就用它们
         const jfk = ap.airports.find((a) => a.iata === 'JFK');
@@ -154,6 +172,19 @@ export function App() {
     scene.showRoutes(result.optimal, result.gc, layers.rhumb ? result.rhumb : undefined);
   }, [result, sceneReady, layers.rhumb]);
 
+  // ---------- 选中航班：高亮其起降机场 ----------
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    if (!selectedFlight) {
+      scene.highlightAirport(null);
+      return;
+    }
+    const snap = useStore.getState().liveSnapshot;
+    const f = snap?.flights.find((x) => x.callsign === selectedFlight);
+    scene.highlightAirport(f?.origin && f.origin !== '—' ? f.origin : null);
+  }, [selectedFlight]);
+
   // ---------- 图层开关 ----------
   useEffect(() => {
     const scene = sceneRef.current;
@@ -163,8 +194,14 @@ export function App() {
     scene.setLayerVisibility('rhumb', layers.rhumb);
     scene.setLayerVisibility('cat', layers.cat);
     scene.setLayerVisibility('grid', layers.grid);
+    scene.setLayerVisibility('airports', showAirports);
     scene.setJetParams({ showCat: layers.cat });
-  }, [layers]);
+  }, [layers, showAirports]);
+
+  // ---------- 测距线 ----------
+  useEffect(() => {
+    sceneRef.current?.setRulerPoints(rulerPoints);
+  }, [rulerPoints]);
 
   // ---------- 悬停卡片位置 ----------
   useEffect(() => {
@@ -267,6 +304,8 @@ export function App() {
         <WindLegend />
         <LiveFlightsPanel />
         <TurbulencePanel />
+        <RulerPanel />
+        {selectedFlight && <FlightDetailPanel />}
         <TimeBar />
 
         {/* 剖面图挂到右侧面板底部区域 */}

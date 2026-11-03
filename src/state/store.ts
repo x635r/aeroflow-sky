@@ -11,6 +11,7 @@ import type { WindField, WindManifest } from '../data/windField';
 import { timeToStepPos, pressureToLevelPos } from '../data/windField';
 import { comparePlans, type Comparison, type PlanContext } from '../sim/routeEngine';
 import type { LatLon } from '../core/geo';
+import type { LiveFlight, LiveSnapshot } from '../data/liveFlights';
 
 export type Airport = {
   iata: string;
@@ -65,6 +66,19 @@ type State = {
   result: Comparison | null;
   planning: boolean;
 
+  // ---- 实时航班 ----
+  /** 最近一次拉取的航班快照（含来源标识） */
+  liveSnapshot: LiveSnapshot | null;
+  liveLoading: boolean;
+  /** 选中的航班呼号（用于详情面板与渲染高亮） */
+  selectedFlight: string | null;
+  /** 是否显示机场点图层 */
+  showAirports: boolean;
+  /** 测距工具：已点选的两个点 */
+  rulerPoints: Array<{ lat: number; lon: number; label?: string }>;
+  /** 测距模式：开启后点击地球会添加测距点而不是选机场 */
+  rulerMode: boolean;
+
   // ---- HUD ----
   hover: { lat: number; lon: number } | null;
   fps: number;
@@ -84,6 +98,15 @@ type State = {
   toggleReturn: () => void;
   recompute: () => void;
   setHover: (h: { lat: number; lon: number } | null) => void;
+  selectFlight: (callsign: string | null) => void;
+  setLiveSnapshot: (s: LiveSnapshot | null) => void;
+  setLiveLoading: (v: boolean) => void;
+  /** 按呼号取当前选中的航班对象 */
+  selectedFlightData: () => LiveFlight | null;
+  toggleAirports: () => void;
+  addRulerPoint: (p: { lat: number; lon: number; label?: string }) => void;
+  clearRuler: () => void;
+  toggleRulerMode: () => void;
   setFps: (n: number) => void;
   dismissIntro: () => void;
   setSheet: (s: State['activeSheet']) => void;
@@ -134,6 +157,13 @@ export const useStore = create<State>((set, get) => ({
 
   result: null,
   planning: false,
+
+  liveSnapshot: null,
+  liveLoading: false,
+  selectedFlight: null,
+  showAirports: true,
+  rulerPoints: [],
+  rulerMode: false,
 
   hover: null,
   fps: 60,
@@ -214,6 +244,35 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setHover: (hover) => set({ hover }),
+
+  selectFlight: (callsign) =>
+    set((s) => ({ selectedFlight: s.selectedFlight === callsign ? null : callsign })),
+
+  setLiveSnapshot: (liveSnapshot) => set({ liveSnapshot }),
+  setLiveLoading: (liveLoading) => set({ liveLoading }),
+
+  selectedFlightData: () => {
+    const s = get();
+    if (!s.selectedFlight || !s.liveSnapshot) return null;
+    return s.liveSnapshot.flights.find((f) => f.callsign === s.selectedFlight) ?? null;
+  },
+
+  toggleAirports: () =>
+    set((s) => {
+      const next = !s.showAirports;
+      return { showAirports: next };
+    }),
+
+  addRulerPoint: (p) =>
+    set((s) => {
+      // 最多留两个点：第三次点击重新开始
+      const next = s.rulerPoints.length >= 2 ? [p] : [...s.rulerPoints, p];
+      return { rulerPoints: next };
+    }),
+
+  clearRuler: () => set({ rulerPoints: [] }),
+
+  toggleRulerMode: () => set((s) => ({ rulerMode: !s.rulerMode })),
   setFps: (fps) => set({ fps }),
   dismissIntro: () => set({ showIntro: false }),
   setSheet: (activeSheet) => set({ activeSheet }),

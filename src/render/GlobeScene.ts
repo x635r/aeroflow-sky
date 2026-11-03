@@ -11,7 +11,9 @@ import { createEarth, createAtmosphere, createStarfield, createGraticule } from 
 import { rasterizeLand, type LandPolygon } from './landTexture';
 import { JetParticles, type JetParams } from './JetParticles';
 import { createRouteLine, createTurbulenceTubes, createAirportMarker, createAircraftMarker, type RouteVisuals } from './routes';
-import { toVec3, fromVec3 } from '../core/geo';
+import { createAirportLayer, type AirportLayer } from './airportLayer';
+import type { Airport } from '../state/store';
+import { toVec3, fromVec3, slerp } from '../core/geo';
 import type { WindField } from '../data/windField';
 import { createWindTexture } from '../render/windTexture';
 import type { RouteResult } from '../sim/routeEngine';
@@ -26,6 +28,8 @@ export type SceneStats = {
 export type SceneCallbacks = {
   onHover?: (lat: number, lon: number) => void;
   onPick?: (lat: number, lon: number) => void;
+  /** 点到机场点时触发（优先于 onPick） */
+  onPickAirport?: (airport: Airport) => void;
   onStats?: (stats: SceneStats) => void;
   onReady?: () => void;
 };
@@ -51,6 +55,8 @@ export class GlobeScene {
   private turbulence: THREE.Group | null = null;
   private markers: THREE.Group = new THREE.Group();
   private aircraftMarker: THREE.Group | null = null;
+  private airportLayer: AirportLayer | null = null;
+  private rulerGroup: THREE.Group | null = null;
 
   private clock = new THREE.Clock();
   private raf = 0;
@@ -74,7 +80,7 @@ export class GlobeScene {
   private currentLevelPos = 1;
   private currentStepPos = 0;
   private lastLevelPos = -1;
-  private visibleLayers = { jet: true, gc: true, rhumb: false, cat: true, grid: false };
+  private visibleLayers = { jet: true, gc: true, rhumb: false, cat: true, grid: false, airports: true };
 
   constructor(container: HTMLElement, callbacks: SceneCallbacks = {}) {
     this.container = container;
@@ -229,6 +235,97 @@ export class GlobeScene {
     this.scene.add(this.jet.group);
   }
 
+  /** 装载机场点图层。可在 loadLand 之后、任意时刻调用。 */
+  attachAirports(airports: Airport[]): void {
+    if (this.airportLayer) {
+      this.scene.remove(this.airportLayer.group);
+      this.airportLayer.dispose();
+      this.airportLayer = null;
+    }
+    this.airportLayer = createAirportLayer(airports, { hubCount: 42 });
+    this.airportLayer.group.visible = this.visibleLayers.airports;
+    this.scene.add(this.airportLayer.group);
+  }
+
+  /**
+   * 更新测距线：两点之间画一条大圆弧 + 端点标记。
+   * 传空数组则清除。
+   */
+  setRulerPoints(points: Array<{ lat: number; lon: number }>): void {
+    if (this.rulerGroup) {
+      this.scene.remove(this.rulerGroup);
+      this.rulerGroup.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        if (m.material) (m.material as THREE.Material).dispose();
+      });
+      this.rulerGroup = null;
+    }
+    if (points.length === 0) return;
+
+    const g = new THREE.Group();
+    g.name = 'ruler';
+    const RULER_R = 1.008;
+
+    if (points.length >= 2) {
+      const va = toVec3(points[0].lat, points[0].lon);
+      const vb = toVec3(points[1].lat, points[1].lon);
+      const pts: THREE.Vector3[] = [];
+      const N = 96;
+      for (let i = 0; i <= N; i++) {
+        const v = slerp(va, vb, i / N);
+        pts.push(new THREE.Vector3(v[0] * RULER_R, v[1] * RULER_R, v[2] * RULER_R));
+      }
+      const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
+      const lineMat = new THREE.LineBasicMaterial({
+        color: 0x8fe0ff,
+        transparent: true,
+        opacity: 0.85,
+        depthWrite: false,
+      });
+      const line = new THREE.Line(lineGeo, lineMat);
+      line.renderOrder = 5;
+      g.add(line);
+    }
+
+    // 端点标记
+    for (let i = 0; i < points.length; i++) {
+      const v = toVec3(points[i].lat, points[i].lon, RULER_R);
+      const dot = new THREE.Mesh(
+        new THREE.SphereGeometry(0.008, 12, 8),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, depthWrite: false }),
+      );
+      dot.position.set(v[0], v[1], v[2]);
+      dot.renderOrder = 6;
+      g.add(dot);
+
+      const halo = new THREE.Mesh(
+        new THREE.SphereGeometry(0.016, 12, 8),
+        new THREE.MeshBasicMaterial({
+          color: 0x35d0f5,
+          transparent: true,
+          opacity: 0.25,
+          blending: THREE.CustomBlending,
+          blendSrc: THREE.OneFactor,
+          blendDst: THREE.OneFactor,
+          blendEquation: THREE.AddEquation,
+          depthWrite: false,
+        }),
+      );
+      halo.position.set(v[0], v[1], v[2]);
+      halo.renderOrder = 5;
+      g.add(halo);
+    }
+
+    this.rulerGroup = g;
+    this.scene.add(g);
+  }
+
+  /** 高亮某个机场（按 IATA），null 取消 */
+  highlightAirport(iata: string | null): void {
+    this.airportLayer?.setHighlight(iata);
+  }
+
   setWindFrame(levelPos: number, stepPos: number): void {
     this.currentLevelPos = levelPos;
     this.currentStepPos = stepPos;
@@ -240,8 +337,12 @@ export class GlobeScene {
     this.jet?.applyParams(p);
   }
 
-  setLayerVisibility(layer: 'jet' | 'gc' | 'rhumb' | 'cat' | 'grid', on: boolean): void {
+  setLayerVisibility(
+    layer: 'jet' | 'gc' | 'rhumb' | 'cat' | 'grid' | 'airports',
+    on: boolean,
+  ): void {
     this.visibleLayers[layer] = on;
+    if (layer === 'airports') this.airportLayer?.setVisible(on);
     if (layer === 'jet') this.jet?.setVisible(on);
     if (layer === 'gc') this.gcVisuals?.setVisible(on);
     if (layer === 'rhumb') this.rhumbVisuals?.setVisible(on);
@@ -373,6 +474,12 @@ export class GlobeScene {
       const dt = performance.now() - ds.t;
       // 轻点而非拖动 → 视为拾取
       if (moved < 6 && dt < 400) {
+        // 机场点优先：点中了就给机场，没点中再退化成经纬度
+        const ap = this.pickAirport(e.clientX, e.clientY);
+        if (ap) {
+          this.cb.onPickAirport?.(ap);
+          return;
+        }
         const hit = this.pickSphere(e.clientX, e.clientY);
         if (hit) this.cb.onPick?.(hit.lat, hit.lon);
       }
@@ -394,6 +501,15 @@ export class GlobeScene {
 
   private pointerMove: (e: PointerEvent) => void = () => {};
   private onResize: () => void = () => {};
+
+  /** 屏幕坐标 → 最近机场（若无则 null） */
+  private pickAirport(clientX: number, clientY: number): Airport | null {
+    if (!this.airportLayer || !this.airportLayer.group.visible) return null;
+    const r = this.renderer.domElement.getBoundingClientRect();
+    const nx = ((clientX - r.left) / r.width) * 2 - 1;
+    const ny = -((clientY - r.top) / r.height) * 2 + 1;
+    return this.airportLayer.pick(nx, ny, this.camera);
+  }
 
   private pickSphere(clientX: number, clientY: number): { lat: number; lon: number } | null {
     const r = this.renderer.domElement.getBoundingClientRect();
@@ -447,6 +563,9 @@ export class GlobeScene {
       this.starfield.rotation.y += dt * 0.0022;
     }
 
+    // 机场点大小随相机距离自适应，缩放到近处不会糊成一片
+    this.airportLayer?.update(this.camera.position.length());
+
     this.renderer.render(this.scene, this.camera);
 
     // 供自动化验收读取的运行时探针：帧计数与上一次 tick 间隔
@@ -492,6 +611,7 @@ export class GlobeScene {
     window.removeEventListener('resize', this.onResize);
     this.clearRoutes();
     this.jet?.dispose();
+    this.airportLayer?.dispose();
     this.windTex?.dispose();
     this.controls.dispose();
     this.renderer.dispose();

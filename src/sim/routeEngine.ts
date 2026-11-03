@@ -28,6 +28,8 @@ import {
   slerp,
   greatCircleDistance,
   initialBearing,
+  rhumbLine,
+  rhumbPath,
   bearingToUV,
   normalizeLon,
   clamp,
@@ -135,11 +137,18 @@ function makeSampler(ctx: PlanContext) {
 /**
  * 沿一条折线（经纬点序列）积分飞行时间。
  * 每段用中点风，段内视为匀速——积分误差小且完全可复现。
+ *
+ * 语义约定（务必保持）：
+ *   points[i].distance      = 起点到第 i 点的**累计**距离，points[0] 恒为 0
+ *   points[i].groundSpeed   = 第 i 点 → 第 i+1 点这一段的平均地速
+ *   末点的 groundSpeed 沿用最后一段，避免 UI 显示 0
+ *
+ * 早期版本先累加再 push，导致 points[0].distance 等于首段长度（非 0），
+ * summarize 用相邻点距离差求时长时整段漏掉首段，时长系统性偏低 2–3%。
  */
 function integrateLegs(
   ctx: PlanContext,
   coords: LatLon[],
-  onPoint?: (p: RoutePoint, index: number) => void,
   segmentTargetDeg = 36,
 ): RoutePoint[] {
   const sampler = makeSampler(ctx);
@@ -162,61 +171,88 @@ function integrateLegs(
   dense.push(coords[coords.length - 1]);
 
   let distance = 0;
-  let lastGs = 0;
-  let lastTas = 0;
-  let lastAlong = 0;
-  let lastCross = 0;
-  let lastTrack = 0;
+  // 上一段的飞行参数，用于给末点填一个合理值
+  let lastLeg = { gs: 0, tas: 0, along: 0, cross: 0, track: 0 };
 
   for (let i = 0; i < dense.length; i++) {
     const p = dense[i];
-    let gs = lastGs;
-    let tas = lastTas;
-    let along = lastAlong;
-    let cross = lastCross;
-    let track = lastTrack;
+    const isLast = i >= dense.length - 1;
 
-    if (i < dense.length - 1) {
+    let leg = lastLeg;
+
+    if (!isLast) {
       const next = dense[i + 1];
-      const stepDist = greatCircleDistance(p, next);
-      track = initialBearing(p, next);
-      const mid = fromVec3(
-        slerp(toVec3(p.lat, p.lon), toVec3(next.lat, next.lon), 0.5),
-      );
+      const track = initialBearing(p, next);
+      const mid = fromVec3(slerp(toVec3(p.lat, p.lon), toVec3(next.lat, next.lon), 0.5));
       const w = sampler.at(mid.lat, mid.lon);
-      tas = machToTas(ctx.mach, w.tempK);
+      const tas = machToTas(ctx.mach, w.tempK);
       const tri = solveWindTriangle(track, tas, w);
-      gs = tri.groundSpeed;
-      along = -tri.headwindComponent;
-      cross = tri.crosswindComponent;
-      distance += stepDist;
-      lastGs = gs;
-      lastTas = tas;
-      lastAlong = along;
-      lastCross = cross;
-      lastTrack = track;
+      if (tri.infeasible) {
+        // 该段风太强、物理上飞不出来。跳过这一点而不是记下假地速，
+        // 否则时长会被严重低估（早期版本会让 DP 选中这种航段）。
+        continue;
+      }
+      leg = {
+        gs: tri.groundSpeed,
+        tas,
+        along: -tri.headwindComponent,
+        cross: tri.crosswindComponent,
+        track,
+      };
+      lastLeg = leg;
     }
 
     const w = sampler.at(p.lat, p.lon);
-    const rp: RoutePoint = {
+    out.push({
       lat: p.lat,
       lon: p.lon,
-      distance: distance,
-      groundSpeed: gs,
-      tas,
-      track,
-      windAlong: along,
-      windCross: cross,
+      distance,
+      groundSpeed: leg.gs,
+      tas: leg.tas,
+      track: leg.track,
+      windAlong: leg.along,
+      windCross: leg.cross,
       windSpeed: w.speed,
       windDir: w.direction,
       cat: w.cat,
       tempK: w.tempK,
-    };
-    out.push(rp);
-    onPoint?.(rp, i);
+    });
+
+    // 累加的是「本点 → 下一点」的距离
+    if (!isLast) {
+      distance += greatCircleDistance(p, dense[i + 1]);
+    }
   }
 
   return out;
+}
+
+/* ==========================================================================
+   CAT 湍流等级：单一事实来源
+   --------------------------------------------------------------------------
+   早期版本在 6 个文件里用了 6 个不同的阈值（0.25 / 0.3 / 0.42 / 0.45 / 0.5 / 0.55），
+   于是同一个航段的「湍流占比」在两个面板上给出不同数字。
+   所有消费方（渲染、面板、图例）必须引用这里的常量。
+   ========================================================================== */
+export const CAT_LEVELS = {
+  /** 低于此值视为背景噪声（对应 Ellrod TI1 的分位归一结果） */
+  light: 0.42,
+  moderate: 0.55,
+  severe: 0.72,
+} as const;
+
+/** 计入「受影响航段」统计的门槛 */
+export const CAT_AFFECTED_THRESHOLD = CAT_LEVELS.light;
+
+export function catLevelOf(index: number): 'smooth' | 'light' | 'moderate' | 'severe' {
+  // NaN 与任何数比较都是 false，会一路落到最后一个分支被判成 severe。
+  // 未知不等于最危险，所以 NaN 显式归为 smooth。
+  // 注意只拦 NaN 不拦 ±Infinity：正无穷确实超出阈值，按 severe 处理是正确的。
+  if (Number.isNaN(index)) return 'smooth';
+  if (index < CAT_LEVELS.light) return 'smooth';
+  if (index < CAT_LEVELS.moderate) return 'light';
+  if (index < CAT_LEVELS.severe) return 'moderate';
+  return 'severe';
 }
 
 function summarize(
@@ -226,24 +262,31 @@ function summarize(
   deviationDeg = 0,
 ): RouteResult {
   const distance = points.length ? points[points.length - 1].distance : 0;
+
+  // 第 i 段的地速就是 points[i].groundSpeed（integrateLegs 的约定）
   let duration = 0;
   for (let i = 0; i < points.length - 1; i++) {
     const p = points[i];
     const q = points[i + 1];
     const d = q.distance - p.distance;
-    const gs = Math.max((p.groundSpeed + q.groundSpeed) / 2, 1);
-    duration += d / gs;
+    duration += d / Math.max(p.groundSpeed, 1);
   }
+
   const avgGs = duration > 0 ? distance / duration : 0;
+
   let sumAlong = 0;
   let maxWind = 0;
   let maxCat = 0;
-  let catCount = 0;
-  for (const p of points) {
+  // 距离加权的湍流航程，比点数加权更符合「飞多久会颠」的直觉
+  let catDist = 0;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
     sumAlong += p.windAlong;
     if (p.windSpeed > maxWind) maxWind = p.windSpeed;
-    if (p.cat > maxCat) maxCat = p.cat;
-    if (p.cat > 0.5) catCount++;
+    if (Number.isFinite(p.cat) && p.cat > maxCat) maxCat = p.cat;
+    if (i < points.length - 1 && catLevelOf(p.cat) !== 'smooth') {
+      catDist += points[i + 1].distance - p.distance;
+    }
   }
   return {
     kind,
@@ -254,7 +297,7 @@ function summarize(
     avgWindAlong: points.length ? sumAlong / points.length : 0,
     maxWind,
     maxCat,
-    catFraction: points.length ? catCount / points.length : 0,
+    catFraction: distance > 0 ? catDist / distance : 0,
     deviationDeg,
     extraDistance: distance - referenceDistance,
   };
@@ -268,52 +311,38 @@ export function planGreatCircle(ctx: PlanContext, from: LatLon, to: LatLon): Rou
   const n = 48;
   for (let i = 0; i <= n; i++) coords.push(fromVec3(slerp(va, vb, i / n)));
   const points = integrateLegs(ctx, coords);
-  return summarize('greatcircle', points, 0);
+  // 大圆就是基准本身，extraDistance 必须为 0（传 0 会得到整条航线长度）
+  return summarize('greatcircle', points, greatCircleDistance(from, to));
 }
 
-/** 等角航线（恒定初始航向的直线，在球面上是螺旋） */
+/**
+ * 恒向线（等角航线 / rhumb line）。
+ *
+ * 恒定航向，在 Mercator 投影上是一条直线。作为「为什么不走它」的反面对照：
+ * 长航程时它比大圆长 10–30%，高纬更明显。
+ *
+ * 早期版本有三个独立错误，叠加后给出的是一条
+ * 「错误航向的螺旋 + 末尾大圆瞬移」，JFK–LHR 报 7560 km（真值 5758），
+ * 且正反两向长度不等。现在直接用 Mercator 插值，长度由解析公式给出。
+ */
 export function planRhumb(ctx: PlanContext, from: LatLon, to: LatLon): RouteResult {
-  // 用恒向线的标准公式，按分段数值推进
-  const coords: LatLon[] = [from];
-  const total = greatCircleDistance(from, to);
-  const steps = 48;
-  const brg = initialBearing(from, to);
-  let cur = from;
-  for (let i = 1; i <= steps; i++) {
-    const remain = total * (1 - i / steps);
-    const segLen = total / steps;
-    // 恒向线的航向恒定：沿 brg 推进 segLen
-    const angular = segLen / EARTH_R_M;
-    const φ1 = cur.lat * DEG;
-    const λ1 = cur.lon * DEG;
-    const θ = brg * DEG;
-    const φ2 = Math.asin(clamp(Math.sin(φ1) * Math.cos(angular) + Math.cos(φ1) * Math.sin(angular) * Math.cos(θ), -1, 1));
-    const λ2 = λ1 + Math.atan2(
-      Math.sin(θ) * Math.sin(angular) * Math.cos(φ1),
-      Math.cos(angular) - Math.sin(φ1) * Math.sin(φ2),
-    );
-    cur = { lat: φ2 * RAD, lon: normalizeLon(λ2 * RAD) };
-    coords.push(cur);
-    void remain;
-  }
-  // 把终点精确对齐
-  coords[coords.length - 1] = to;
+  const line = rhumbLine(from, to);
+  // 满足 36°/段 的细分密度，与 integrateLegs 的默认分辨率一致
+  const steps = Math.max(12, Math.ceil(line.distance / EARTH_R_M / ((36 * Math.PI) / 180)));
+  const coords = rhumbPath(from, to, Math.min(steps, 96));
   const points = integrateLegs(ctx, coords);
-  const gc = greatCircleDistance(from, to);
-  return summarize('rhumb', points, gc);
+  return summarize('rhumb', points, greatCircleDistance(from, to));
 }
 
 export type WindOptimalOptions = {
   /** 横向搜索半宽（公里）。跨洋航线用 700 左右足够吃到急流。 */
   corridorKm?: number;
-  /** 横向离散点数 */
+  /** 横向离散点数（强制为奇数，保证中心列恰好是零偏移） */
   offsets?: number;
   /** 沿航路站数 */
   stations?: number;
-  /** 平滑惩罚（秒 / 每公里横向变化），抑制锯齿 */
+  /** 横向位移惩罚（秒 / 公里）。抑制逐站来回横跳的锯齿。 */
   smoothness?: number;
-  /** 是否固定巡航高度（当前实现固定） */
-  altitudeLock?: boolean;
 };
 
 /**
@@ -322,7 +351,11 @@ export type WindOptimalOptions = {
  * 为什么用 DP 而不是 Dijkstra on grid：
  *   航线本质是「单向前进」，沿航迹方向的推进是单调的，
  *   所以可以按站分层，复杂度 O(N·M²) 而不是全图搜索。
- *   40 站 × 21 横向槽 → 约 1.7 万次风场采样，单次 <50ms，可实时拖动。
+ *   34 站 × 19 横向槽 → 约 1.1 万次风场采样，单次 <50ms，可实时拖动拖动。
+ *
+ * 不变量：走廊宽度为 0 时结果必须与大圆完全一致。
+ * 这条性质是「借风收益」可信的前提——若 DP 在大圆本身上就能"省"出时间，
+ * 那省下的只是离散化误差，不是风。
  */
 export function planWindOptimal(
   ctx: PlanContext,
@@ -330,23 +363,30 @@ export function planWindOptimal(
   to: LatLon,
   opts: WindOptimalOptions = {},
 ): RouteResult {
-  const corridorKm = opts.corridorKm ?? 700;
-  const M = opts.offsets ?? 21;
-  const N = opts.stations ?? 40;
-  // 单位是「秒 / 公里横向位移」。取值要让「为了吃 40 m/s 顺风而横向挪 300 km」
-  // 仍然划算（挪 300 km 扣 9 s），但能压住逐站来回横跳的锯齿。
-  const smooth = opts.smoothness ?? 0.03;
+  const corridorKm = Math.max(0, opts.corridorKm ?? 700);
+  // 强制奇数：偶数个槽位时不存在恰好零偏移的列，DP 的可行解集合里
+  // 就不含大圆，会凭空"优化"出几十公里偏移和几分钟收益。
+  const requestedM = Math.max(3, Math.floor(opts.offsets ?? 21));
+  const M = requestedM % 2 === 0 ? requestedM + 1 : requestedM;
+  const N = Math.max(2, Math.floor(opts.stations ?? 40));
+
+  // 单位：秒 / 公里「转向幅度」。
+  // 因为只惩罚方向反转（见 turnPenalty），持续的同向绕飞不收费，
+  // 所以这个值要比一阶惩罚时大得多才有效：横跳 160 km 罚约 400 s，
+  // 与一次真绕飞可能省下的数百秒同量级。
+  const smooth = opts.smoothness ?? 2.5;
 
   const va = toVec3(from.lat, from.lon);
   const vb = toVec3(to.lat, to.lon);
+  const center = (M - 1) / 2;
 
+  // 以中心为零点构造，保证 offsetsKm[center] === 0 恒成立
   const offsetsKm: number[] = [];
   for (let j = 0; j < M; j++) {
-    offsetsKm.push(-corridorKm + (2 * corridorKm * j) / (M - 1));
+    offsetsKm.push((corridorKm * (j - center)) / center);
   }
 
   const sampler = makeSampler(ctx);
-  const gcTrack = initialBearing(from, to);
 
   // 站点位置与基准航迹角
   type Station = { base: LatLon; track: number; cand: LatLon[] };
@@ -360,23 +400,23 @@ export function planWindOptimal(
     const cand: LatLon[] = [];
     for (let j = 0; j < M; j++) {
       if (i === 0 || i === N) {
-        cand.push(j === (M - 1) / 2 ? base : { lat: NaN, lon: NaN });
+        cand.push(j === center ? base : { lat: NaN, lon: NaN });
       } else {
         cand.push(offsetPoint(base, track, offsetsKm[j] * 1000));
       }
     }
     stations.push({ base, track, cand });
   }
-  // 起终点只允许居中
-  const center = Math.floor(M / 2);
+  // 起终点只允许居中（M 已强制为奇数，center 是整数）
+  const centerIdx = center;
   for (let j = 0; j < M; j++) {
-    if (j !== center) {
+    if (j !== centerIdx) {
       stations[0].cand[j] = { lat: NaN, lon: NaN };
       stations[N].cand[j] = { lat: NaN, lon: NaN };
     }
   }
-  stations[0].cand[center] = from;
-  stations[N].cand[center] = to;
+  stations[0].cand[centerIdx] = from;
+  stations[N].cand[centerIdx] = to;
 
   const INF = Number.POSITIVE_INFINITY;
   const cost: Float64Array[] = [];
@@ -385,8 +425,36 @@ export function planWindOptimal(
     cost.push(new Float64Array(M).fill(INF));
     fromIdx.push(new Int16Array(M).fill(-1));
   }
-  cost[0][center] = 0;
+  cost[0][centerIdx] = 0;
 
+  /**
+   * 平滑处理：两阶段，而不是把转向罚塞进 DP。
+   *
+   * 要判断「转向」需要 (i, j, 上一站) 三维状态，复杂度变 O(N·M³)。
+   * M=19、N=34 时实测单次推演从 ~400ms 涨到 ~1.8s，拖动滑块会明显卡顿。
+   *
+   * 所以改成一阶段纯时间最优 DP（O(N·M²)），二阶段对折线做逐站局部重优化：
+   * 每站只在能降低「时间 + 转向罚」时才移动，单站 O(M)，总共 O(N²·M)。
+   * 转向罚只罚方向反转——持续同向绕飞免费，来回横跳才收费。
+   */
+  const turnPenalty = (prevDelta: number, delta: number): number =>
+    prevDelta !== 0 && delta !== 0 && prevDelta * delta < 0
+      ? Math.min(Math.abs(prevDelta), Math.abs(delta)) * smooth
+      : 0;
+
+  const legTime = (a: LatLon, b: LatLon): number => {
+    const dist = greatCircleDistance(a, b);
+    if (dist < 1) return INF;
+    const track = initialBearing(a, b);
+    const mid = fromVec3(slerp(toVec3(a.lat, a.lon), toVec3(b.lat, b.lon), 0.5));
+    const w = sampler.at(mid.lat, mid.lon);
+    const tas = machToTas(ctx.mach, w.tempK);
+    const tri = solveWindTriangle(track, tas, w);
+    if (tri.infeasible) return INF;
+    return dist / tri.groundSpeed;
+  };
+
+  // ---- 一阶段：纯飞行时间最优 ----
   for (let i = 0; i < N; i++) {
     const cur = stations[i];
     const nxt = stations[i + 1];
@@ -397,18 +465,9 @@ export function planWindOptimal(
       for (let k = 0; k < M; k++) {
         const q = nxt.cand[k];
         if (!Number.isFinite(q.lat)) continue;
-        const dist = greatCircleDistance(p, q);
-        if (dist < 1) continue;
-        const track = initialBearing(p, q);
-        const mid = fromVec3(slerp(toVec3(p.lat, p.lon), toVec3(q.lat, q.lon), 0.5));
-        const w = sampler.at(mid.lat, mid.lon);
-        const tas = machToTas(ctx.mach, w.tempK);
-        const tri = solveWindTriangle(track, tas, w);
-        if (tri.infeasible) continue;
-
-        const lateralChange = Math.abs(offsetsKm[k] - offsetsKm[j]);
-        const time = dist / tri.groundSpeed + lateralChange * smooth;
-        const total = c0 + time;
+        const t = legTime(p, q);
+        if (!Number.isFinite(t)) continue;
+        const total = c0 + t;
         if (total < cost[i + 1][k]) {
           cost[i + 1][k] = total;
           fromIdx[i + 1][k] = j;
@@ -417,7 +476,6 @@ export function planWindOptimal(
     }
   }
 
-  // 回溯
   let bestK = -1;
   let bestCost = INF;
   for (let j = 0; j < M; j++) {
@@ -427,16 +485,71 @@ export function planWindOptimal(
     }
   }
 
-  const path: LatLon[] = [];
-  let j = bestK;
+  const pathIdx: number[] = [];
+  let jj = bestK;
   for (let i = N; i >= 0; i--) {
-    if (j < 0) break;
-    path.push(stations[i].cand[j]);
-    j = fromIdx[i][j];
+    pathIdx.push(jj);
+    if (i === 0) break;
+    const pv = fromIdx[i][jj];
+    jj = pv < 0 ? jj : pv;
   }
-  path.reverse();
+  pathIdx.reverse();
 
-  if (path.length < 2 || !Number.isFinite(bestCost)) {
+  if (pathIdx.length < 2 || !Number.isFinite(bestCost)) {
+    return planGreatCircle(ctx, from, to);
+  }
+
+  // ---- 二阶段：逐站局部重优化，消除锯齿 ----
+  const totalCostAt = (i: number): number => {
+    const a = stations[i - 1].cand[pathIdx[i - 1]];
+    const m = stations[i].cand[pathIdx[i]];
+    const b = stations[i + 1].cand[pathIdx[i + 1]];
+    const t1 = legTime(a, m);
+    const t2 = legTime(m, b);
+    if (!Number.isFinite(t1) || !Number.isFinite(t2)) return INF;
+    const dPrev = offsetsKm[pathIdx[i]] - offsetsKm[pathIdx[i - 1]];
+    const dNext = offsetsKm[pathIdx[i + 1]] - offsetsKm[pathIdx[i]];
+    return t1 + t2 + turnPenalty(dPrev, dNext);
+  };
+
+  if (smooth > 0) {
+    for (let pass = 0; pass < 3; pass++) {
+      let changed = false;
+      for (let i = 1; i < N; i++) {
+        const baseline = totalCostAt(i);
+        if (!Number.isFinite(baseline)) continue;
+        const keep = pathIdx[i];
+        let bestC = keep;
+        let bestVal = baseline;
+        const a = stations[i - 1].cand[pathIdx[i - 1]];
+        const b = stations[i + 1].cand[pathIdx[i + 1]];
+        for (let c = 0; c < M; c++) {
+          if (c === keep) continue;
+          const mid = stations[i].cand[c];
+          if (!Number.isFinite(mid.lat)) continue;
+          const t1 = legTime(a, mid);
+          const t2 = legTime(mid, b);
+          if (!Number.isFinite(t1) || !Number.isFinite(t2)) continue;
+          const dPrev = offsetsKm[c] - offsetsKm[pathIdx[i - 1]];
+          const dNext = offsetsKm[pathIdx[i + 1]] - offsetsKm[c];
+          const v = t1 + t2 + turnPenalty(dPrev, dNext);
+          if (v < bestVal - 1e-6) {
+            bestVal = v;
+            bestC = c;
+          }
+        }
+        if (bestC !== keep) {
+          pathIdx[i] = bestC;
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+  }
+
+  const path: LatLon[] = pathIdx.map((idx, i) => stations[Math.min(i, N)].cand[idx]);
+
+  if (path.length < 2) {
     return planGreatCircle(ctx, from, to);
   }
 
@@ -451,7 +564,6 @@ export function planWindOptimal(
     if (d > maxDevKm) maxDevKm = d;
   }
   maxDevDeg = (maxDevKm / EARTH_R_M) * RAD;
-  void gcTrack;
 
   const points = integrateLegs(ctx, path);
   const gcDist = greatCircleDistance(from, to);
@@ -480,18 +592,29 @@ export function comparePlans(
   opts?: WindOptimalOptions,
 ): Comparison {
   const gc = planGreatCircle(ctx, from, to);
-  let optimum = planWindOptimal(ctx, from, to, opts);
   const rhumb = planRhumb(ctx, from, to);
-  const reverse = planWindOptimal(ctx, to, from, opts);
 
-  // DP 在横向走廊上做离散搜索，路径是由 34 个站点连成的折线，
+  // DP 在横向走廊上做离散搜索，路径是由 N 个站点连成的折线，
   // 而大圆是 48 段稠密折线——两者对风的采样点不同，DP 可能反而"慢几秒"。
   // 这在物理上没有意义（大圆本身就在 DP 的可行解集合里）。
-  // 因此当 DP 结果不优于大圆时，直接采用大圆作为"借风最优"，
-  // 让"借风路线不慢于大圆"这条硬约束始终成立。
-  if (optimum.duration > gc.duration) {
-    optimum = { ...gc, kind: 'windoptimal', deviationDeg: 0 };
-  }
+  //
+  // 守卫必须对**两个方向**都生效：早期版本只保护了正向 optimum，
+  // 于是 reverse 一旦差于它自己的大圆，界面就会出现
+  // 「逆风方向反而更快」这种不可能的结论。
+  const guardAgainstCircle = (dp: RouteResult, ref: RouteResult): RouteResult =>
+    dp.duration > ref.duration
+      ? {
+          ...ref,
+          kind: 'windoptimal' as const,
+          deviationDeg: 0,
+          // 回退到大圆时，相对大圆的绕飞量为 0
+          extraDistance: 0,
+        }
+      : dp;
+
+  const optimum = guardAgainstCircle(planWindOptimal(ctx, from, to, opts), gc);
+  const revGc = planGreatCircle(ctx, to, from);
+  const reverse = guardAgainstCircle(planWindOptimal(ctx, to, from, opts), revGc);
 
   // 东向 = 经度差为正
   const dLon = normalizeLon(to.lon - from.lon);
@@ -524,28 +647,28 @@ export function catSegments(points: RoutePoint[]): CatSegment[] {
   const segs: CatSegment[] = [];
   let cur: CatSegment | null = null;
   for (const p of points) {
-    // 阈值与 UI 图例、三维高亮保持同一口径：
-    // 0.25 以下视为背景噪声，不进入"受影响航段"统计
-    const level: CatSegment['level'] =
-      p.cat < 0.42 ? 'smooth' : p.cat < 0.55 ? 'light' : p.cat < 0.72 ? 'moderate' : 'severe';
+    // 阈值统一引用 CAT_LEVELS，与图例、三维高亮、统计面板共用同一口径
+    const level = catLevelOf(p.cat);
     if (!cur || cur.level !== level) {
       if (cur) {
         cur.end = p.distance;
-        segs.push(cur);
+        if (cur.end > cur.start) segs.push(cur);
       }
-      cur = { start: p.distance, end: p.distance, level, peak: p.cat };
+      cur = { start: p.distance, end: p.distance, level, peak: Number.isFinite(p.cat) ? p.cat : 0 };
     } else {
       cur.end = p.distance;
-      cur.peak = Math.max(cur.peak, p.cat);
+      if (Number.isFinite(p.cat)) cur.peak = Math.max(cur.peak, p.cat);
     }
   }
-  if (cur) segs.push(cur);
+  if (cur && cur.end > cur.start) segs.push(cur);
   return segs.filter((s) => s.level !== 'smooth');
 }
 
 /** 找出航路上最颠簸的若干点，用于地图标注 */
 export function turbulenceHotspots(points: RoutePoint[], limit = 5): RoutePoint[] {
-  const sorted = [...points].filter((p) => p.cat > 0.45).sort((a, b) => b.cat - a.cat);
+  const sorted = [...points]
+    .filter((p) => Number.isFinite(p.cat) && p.cat >= CAT_AFFECTED_THRESHOLD)
+    .sort((a, b) => b.cat - a.cat);
   const out: RoutePoint[] = [];
   for (const p of sorted) {
     if (out.every((q) => greatCircleDistance(p, q) > 250_000)) out.push(p);

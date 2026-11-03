@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useStore } from '../../state/store';
-import { catSegments, turbulenceHotspots } from '../../sim/routeEngine';
+import { catSegments, turbulenceHotspots, CAT_LEVELS } from '../../sim/routeEngine';
 import { msToKmh } from '../../core/atmos';
 import { CAT_RAMP, sampleRamp, toCss } from '../../render/palette';
 
@@ -93,15 +93,15 @@ export function TurbulencePanel() {
             平稳
           </span>
           <span className="turb-legend-item">
-            <i style={{ background: toCss(sampleRamp(CAT_RAMP, 0.35)) }} />
+            <i style={{ background: toCss(sampleRamp(CAT_RAMP, CAT_LEVELS.light)) }} />
             轻度 {counts.light > 0 ? `×${counts.light}` : ''}
           </span>
           <span className="turb-legend-item">
-            <i style={{ background: toCss(sampleRamp(CAT_RAMP, 0.62)) }} />
+            <i style={{ background: toCss(sampleRamp(CAT_RAMP, CAT_LEVELS.moderate)) }} />
             中度 {counts.moderate > 0 ? `×${counts.moderate}` : ''}
           </span>
           <span className="turb-legend-item">
-            <i style={{ background: toCss(sampleRamp(CAT_RAMP, 0.88)) }} />
+            <i style={{ background: toCss(sampleRamp(CAT_RAMP, CAT_LEVELS.severe)) }} />
             严重 {counts.severe > 0 ? `×${counts.severe}` : ''}
           </span>
         </div>

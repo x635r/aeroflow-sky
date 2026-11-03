@@ -35,6 +35,7 @@ function loadField(): WindField {
     levels: header.levels.map((l) => l.hPa),
     steps: header.steps.map((s) => s.hour),
     stridePerLevel: g.nLat * g.nLon * 4,
+    stepTimestamps: header.steps.map((s) => Date.parse(s.validTime)),
   };
 }
 
@@ -324,7 +325,7 @@ describe('合成风场：急流借风能力', () => {
       steps: [{ hour: 0, validTime: '2026-01-01T00:00:00Z' }],
       layout: '', stats: [], catMethod: '',
     } as WindHeader;
-    return { header, data, grid: g, levels, steps, stridePerLevel: g.nLat * g.nLon * 4 };
+    return { header, data, grid: g, levels, steps, stridePerLevel: g.nLat * g.nLon * 4, stepTimestamps: [Date.now()] };
   }
 
   const jetCtx: PlanContext = {

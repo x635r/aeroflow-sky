@@ -15,7 +15,7 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { toVec3, type LatLon } from '../core/geo';
-import type { RouteResult, RoutePoint } from '../sim/routeEngine';
+import { CAT_AFFECTED_THRESHOLD, type RouteResult, type RoutePoint } from '../sim/routeEngine';
 
 const ROUTE_RADIUS = 1.006;
 const CAT_RADIUS = 1.012;
@@ -117,7 +117,7 @@ export function createRouteLine(
     const catPoints = result.points.map((p) => ({ ...p }));
     const catColors: number[] = [];
     for (const p of catPoints) {
-      const t = Math.max(0, Math.min(1, (p.cat - 0.25) / 0.6));
+      const t = Math.max(0, Math.min(1, (p.cat - CAT_AFFECTED_THRESHOLD) / 0.6));
       const col = new THREE.Color().setHSL(
         THREE.MathUtils.lerp(0.14, 0.98, t),
         0.92,
@@ -180,7 +180,10 @@ export function createRouteLine(
  * 湍流管：把 CAT 高的航段做成可见的「热管」，半径随指数增长。
  * 用 CatmullRom 的 TubeGeometry，在球面上显得它是凸起于航路的。
  */
-export function createTurbulenceTubes(points: RoutePoint[], threshold = 0.45): THREE.Group {
+export function createTurbulenceTubes(
+  points: RoutePoint[],
+  threshold = CAT_AFFECTED_THRESHOLD,
+): THREE.Group {
   const group = new THREE.Group();
   group.name = 'turbulence';
 

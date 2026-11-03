@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../state/store';
-import { fetchLiveFlights, summarizeFlights, typeLabel, type LiveFlight, type LiveSnapshot } from '../../data/liveFlights';
+import { fetchLiveFlights, summarizeFlights, typeLabel, type LiveFlight } from '../../data/liveFlights';
 import { timeToStepPos } from '../../data/windField';
 import { msToKmh } from '../../core/atmos';
 import { CAT_RAMP, sampleRamp, toCss } from '../../render/palette';
@@ -17,8 +17,12 @@ import { CAT_RAMP, sampleRamp, toCss } from '../../render/palette';
 export function LiveFlightsPanel() {
   const field = useStore((s) => s.field);
   const timeMs = useStore((s) => s.timeMs);
-  const [snap, setSnap] = useState<LiveSnapshot | null>(null);
-  const [loading, setLoading] = useState(false);
+  const snap = useStore((s) => s.liveSnapshot);
+  const loading = useStore((s) => s.liveLoading);
+  const setSnap = useStore((s) => s.setLiveSnapshot);
+  const setLoading = useStore((s) => s.setLiveLoading);
+  const selected = useStore((s) => s.selectedFlight);
+  const selectFlight = useStore((s) => s.selectFlight);
   const [collapsed, setCollapsed] = useState(false);
   const [filter, setFilter] = useState<'all' | 'tail' | 'head'>('all');
 
@@ -164,7 +168,12 @@ export function LiveFlightsPanel() {
               </div>
             )}
             {shown.slice(0, 12).map((f) => (
-              <FlightRow key={`${f.callsign}-${f.lat.toFixed(2)}-${f.lon.toFixed(2)}`} f={f} />
+              <FlightRow
+                key={`${f.callsign}-${f.lat.toFixed(2)}-${f.lon.toFixed(2)}`}
+                f={f}
+                active={selected === f.callsign}
+                onSelect={() => selectFlight(f.callsign)}
+              />
             ))}
           </div>
 
@@ -184,13 +193,28 @@ export function LiveFlightsPanel() {
   );
 }
 
-function FlightRow({ f }: { f: LiveFlight }) {
+function FlightRow({
+  f,
+  active,
+  onSelect,
+}: {
+  f: LiveFlight;
+  active: boolean;
+  onSelect: () => void;
+}) {
   const tailwind = f.windAlong;
   const tone = tailwind > 3 ? 'tail' : tailwind < -3 ? 'head' : 'neutral';
   const catColor = toCss(sampleRamp(CAT_RAMP, Math.min(1, Math.max(0, (f.cat - 0.2) / 0.7))));
 
   return (
-    <div className="flight-row" data-tone={tone}>
+    <button
+      className="flight-row"
+      data-tone={tone}
+      data-active={active}
+      onClick={onSelect}
+      type="button"
+      aria-pressed={active}
+    >
       <div className="flight-main">
         <span className="flight-callsign mono">{f.callsign}</span>
         <span className="flight-type">{typeLabel(f.type)}</span>
@@ -226,6 +250,6 @@ function FlightRow({ f }: { f: LiveFlight }) {
           }}
         />
       </div>
-    </div>
+    </button>
   );
 }

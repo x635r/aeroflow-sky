@@ -97,16 +97,54 @@ export function greatCircleDistance(a: LatLon, b: LatLon): number {
 
 /**
  * 球面线性插值 (slerp)，t ∈ [0,1]。用于生成大圆航路点。
+ *
+ * 对跖点（ω ≈ π）必须单独处理：此时 sin(ω) → 0，两个插值系数被放大到
+ * 无穷，结果长度可达 1.5 倍，根本不在球面上。虽然 fromVec3 会重新归一化
+ * 掩盖问题，但直接消费 Vec3 的调用方（greatCirclePath 等）会拿到假点。
+ * 做法是任选一个与 a 正交的「中继点」，分两段插值。
  */
 export function slerp(a: Vec3, b: Vec3, t: number): Vec3 {
   const omega = angularDistance(a, b);
+
   if (omega < 1e-9) return a;
+
+  if (omega > Math.PI - 1e-7) {
+    // 对跖点之间的大圆不唯一——有无穷多条，物理上没有唯一正确答案。
+    // 但必须是**确定且连续**的：同一对输入每次调用得到同一条路径。
+    //
+    // 早期实现「绕某个垂直轴把 a 旋转 90°」得到的中继点落在极点（lat ±90），
+    // 路径整个塌到极地，长度和方向都失去意义。
+    //
+    // 这里用「本地北向」构造中继点：把北极投影到 a 的切平面得到 d，
+    // 再取 mid = normalize(a + d)。mid 必然在球面上、与 a 正交，且连续可微。
+    const Y: Vec3 = [0, 1, 0];
+    const ad = dot(a, Y);
+    let d: Vec3 = [Y[0] - ad * a[0], Y[1] - ad * a[1], Y[2] - ad * a[2]];
+    if (length(d) < 1e-6) {
+      // a 本身就是极点：改用一个水平参考方向
+      d = cross(a, [1, 0, 0]);
+    }
+    d = normalize(d);
+    const mid = normalize([a[0] + d[0], a[1] + d[1], a[2] + d[2]]);
+
+    if (t <= 0.5) return slerpUnit(a, mid, t * 2);
+    return slerpUnit(mid, b, (t - 0.5) * 2);
+  }
+
+  return slerpUnit(a, b, t);
+}
+
+/** 标准 slerp，调用方保证 0 < ω < π */
+function slerpUnit(a: Vec3, b: Vec3, t: number): Vec3 {
+  const omega = angularDistance(a, b);
   const so = Math.sin(omega);
+  if (Math.abs(so) < 1e-12) return a;
   const s0 = Math.sin((1 - t) * omega) / so;
   const s1 = Math.sin(t * omega) / so;
   return [a[0] * s0 + b[0] * s1, a[1] * s0 + b[1] * s1, a[2] * s0 + b[2] * s1];
 }
 
+/** 球面角距（弧度），haversine 数值稳定版 */
 /**
  * 大圆航线的初始方位角（度，正北为 0，顺时针）。
  */
@@ -192,7 +230,103 @@ export function greatCircleBulge(a: LatLon, b: LatLon, samples = 128): number {
   return signedDev;
 }
 
-/** 方位角（度）转单位切向（东为 0，逆时针？此处约定：0=正北，90=正东） */
+/* ==========================================================================
+   恒向线（Rhumb line / Loxodrome）
+   --------------------------------------------------------------------------
+   恒定航向的航线。它在 Mercator 投影上是一条直线，是海图时代的产物。
+   与大圆的关系：赤道上两者重合；其他纬度上恒向线总是更长，
+   高纬长航程时差距可达 30% 以上（这就是大圆航线的价值）。
+
+   注意：必须用 **Mercator 方位角**而不是大圆的 initialBearing。
+   JFK→LHR 两者相差约 26°（51.4° vs 77.9°），
+   用错会让「恒向线」被画成一条错误的螺旋。
+   ========================================================================== */
+
+/** Mercator 投影的等增长度 ψ = ln(tan(π/4 + φ/2)) */
+export function mercatorPsi(latDeg: number): number {
+  const φ = clamp(latDeg, -89.9999, 89.9999) * DEG;
+  return Math.log(Math.tan(Math.PI / 4 + φ / 2));
+}
+
+export type RhumbLine = {
+  /** 恒定航向（度，正北 0，顺时针） */
+  bearing: number;
+  /** 恒定航向的弧度值（用于反向推进） */
+  bearingRad: number;
+  /** 总长度（米） */
+  distance: number;
+  from: LatLon;
+  to: LatLon;
+};
+
+/**
+ * 计算两点间恒向线的方位角与长度。
+ *
+ * 使用标准公式：
+ *   Δψ = ψ₂ − ψ₁
+ *   q  = Δφ / Δψ            （Δψ → 0 时取 cos φ₁）
+ *   s  = √(Δφ² + q²Δλ²) · R
+ *   θ  = atan2(Δλ, Δψ)
+ *
+ * 与方向无关：交换起终点得到相同长度、相差 180° 的航向。
+ */
+export function rhumbLine(a: LatLon, b: LatLon): RhumbLine {
+  const φ1 = a.lat * DEG;
+  const φ2 = b.lat * DEG;
+  const λ1 = a.lon * DEG;
+  const λ2 = b.lon * DEG;
+
+  // 经差取最短路径（-180..180），保证跨日界线时走短路
+  let Δλ = λ2 - λ1;
+  while (Δλ > Math.PI) Δλ -= 2 * Math.PI;
+  while (Δλ < -Math.PI) Δλ += 2 * Math.PI;
+
+  const Δφ = φ2 - φ1;
+  const Δψ = mercatorPsi(b.lat) - mercatorPsi(a.lat);
+
+  // Δψ 趋零时 q → cos φ（赤道附近或纯东西向）
+  const q = Math.abs(Δψ) > 1e-12 ? Δφ / Δψ : Math.cos(φ1);
+
+  const distance = Math.hypot(Δφ, q * Δλ) * EARTH_R_M;
+  const bearingRad = Math.atan2(Δλ, Δψ);
+
+  return {
+    bearing: (bearingRad * RAD + 360) % 360,
+    bearingRad,
+    distance,
+    from: a,
+    to: b,
+  };
+}
+
+/** 恒向线插值：t ∈ [0,1] 从 a 走到 b */
+export function rhumbPoint(a: LatLon, b: LatLon, t: number): LatLon {
+  const λ1 = a.lon * DEG;
+
+  let Δλ = b.lon * DEG - λ1;
+  while (Δλ > Math.PI) Δλ -= 2 * Math.PI;
+  while (Δλ < -Math.PI) Δλ += 2 * Math.PI;
+
+  const ψ1 = mercatorPsi(a.lat);
+  const ψ2 = mercatorPsi(b.lat);
+  const ψ = ψ1 + (ψ2 - ψ1) * t;
+
+  // 由 ψ 反解纬度
+  const φ = 2 * Math.atan(Math.exp(ψ)) - Math.PI / 2;
+  const λ = λ1 + Δλ * t;
+
+  return { lat: φ * RAD, lon: normalizeLon(λ * RAD) };
+}
+
+/** 生成恒向线航路点（含两端点） */
+export function rhumbPath(a: LatLon, b: LatLon, steps: number): LatLon[] {
+  const n = Math.max(1, Math.floor(steps));
+  const out: LatLon[] = [];
+  for (let i = 0; i <= n; i++) out.push(i === 0 ? a : i === n ? b : rhumbPoint(a, b, i / n));
+  return out;
+}
+
+/** 方位角（度）转单位切向（0=正北，90=正东） */
 export function bearingToUV(bearingDeg: number): { east: number; north: number } {
   const r = bearingDeg * DEG;
   return { east: Math.sin(r), north: Math.cos(r) };
@@ -202,8 +336,15 @@ export function uvToBearing(u: number, v: number): number {
   return (Math.atan2(u, v) * RAD + 360) % 360;
 }
 
-/** 把长度夹到 [lo, hi] */
+/**
+ * 把值夹到 [lo, hi]。
+ *
+ * NaN 必须显式处理：`x < lo ? lo : x > hi ? hi : x` 对 NaN 三个分支都是
+ * false，会原样返回 NaN，于是「夹取」变成了 NaN 的搬运工。
+ * 这里把 NaN 收束到 lo，让下游拿到一个可解释的边界值。
+ */
 export function clamp(x: number, lo: number, hi: number): number {
+  if (!Number.isFinite(x)) return Number.isNaN(x) ? lo : x > 0 ? hi : lo;
   return x < lo ? lo : x > hi ? hi : x;
 }
 

@@ -40,6 +40,8 @@ export function ControlPanel() {
   const setAircraft = useStore((s) => s.setAircraft);
   const setMach = useStore((s) => s.setMach);
   const setPressure = useStore((s) => s.setPressure);
+  const showAirports = useStore((s) => s.showAirports);
+  const toggleAirports = useStore((s) => s.toggleAirports);
   const toggleLayer = useStore((s) => s.toggleLayer);
   const swapEndpoints = useStore((s) => s.swapEndpoints);
 
@@ -241,6 +243,22 @@ export function ControlPanel() {
             </svg>
           </button>
           <div className="layer-grid" style={{ display: openSection === 'layers' ? 'grid' : 'none' }}>
+            <button
+              className="layer-toggle"
+              data-on={showAirports}
+              onClick={toggleAirports}
+              type="button"
+              aria-pressed={showAirports}
+            >
+              <span
+                className="layer-dot"
+                style={{
+                  background: showAirports ? '#ffd166' : 'transparent',
+                  border: '1px solid #ffd166',
+                }}
+              />
+              机场网络
+            </button>
             {LAYER_META.map((l) => (
               <button
                 key={l.key}

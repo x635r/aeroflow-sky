@@ -14,7 +14,7 @@
  *   GS·cos(TRK) = TAS·cos(HDG) + W_north
  */
 
-import { DEG, RAD, clamp } from './geo';
+import { DEG, RAD } from './geo';
 
 export type Wind = { u: number; v: number }; // m/s，u 向东，v 向北
 
@@ -136,20 +136,23 @@ export function solveWindTriangle(
   // 机头必须在「航迹反方向的风来向」一侧补偿
   // GS 沿航迹方向满足：GS = TAS·cos(WCA) + along
   // 横侧满足：0 = TAS·sin(WCA) + cross   ⇒ sin(WCA) = -cross / TAS
-  const sinWca = clamp(-crossw / Math.max(trueAirspeed, 1e-6), -1, 1);
+  //
+  // 关键：若 |侧风| > TAS，物理上不存在能维持该航迹的机头方向。
+  // 此时不能靠 clamp 把 sin 压到 ±1 蒙混过去——那会返回一个
+  // 看起来完全合理的假地速（实测 track=90°,TAS=100,风(50,140) → gs=50），
+  // 下游 DP 会据此选出一条飞不出来的航段。
+  const overCross = Math.abs(crossw) > trueAirspeed + 1e-9;
+  const sinWca = overCross
+    ? Math.sign(-crossw)
+    : Math.max(-1, Math.min(1, -crossw / Math.max(trueAirspeed, 1e-6)));
   const wca = Math.asin(sinWca);
   const cosWca = Math.cos(wca);
 
-  let groundSpeed = trueAirspeed * cosWca + along;
-  let infeasible = false;
-  if (groundSpeed < 1) {
-    // 逆风超过真空速：物理上无法沿该航迹前进
-    groundSpeed = Math.max(groundSpeed, 0.5);
-    infeasible = true;
-  }
+  const rawGs = trueAirspeed * cosWca + along;
+  const infeasible = overCross || rawGs < 1;
 
   return {
-    groundSpeed,
+    groundSpeed: infeasible ? 0 : rawGs,
     windCorrection: wca * RAD,
     heading: (trackDeg + wca * RAD + 360) % 360,
     headwindComponent: -along,

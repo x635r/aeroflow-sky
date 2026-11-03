@@ -66,6 +66,8 @@ export type WindField = {
   steps: number[];
   /** 每个采样点的完整数据，供 GPU 上传 */
   stridePerLevel: number;
+  /** 各时效的 Unix 毫秒时间戳，加载时解析一次即可 */
+  stepTimestamps: number[];
 };
 
 /** IEEE 754 half → float32 */
@@ -153,6 +155,7 @@ export async function loadWindField(
     levels: header.levels.map((l) => l.hPa),
     steps: header.steps.map((s) => s.hour),
     stridePerLevel,
+    stepTimestamps: header.steps.map((s) => Date.parse(s.validTime)),
   };
 }
 
@@ -198,6 +201,13 @@ export function sampleWind(
   opts: SampleOptions,
   out: WindSample = { u: 0, v: 0, cat: 0, tempK: 216, speed: 0, direction: 0 },
 ): WindSample {
+  // NaN 进不来：`((x0 % nL) + nL) % nL` 对 NaN 得 NaN，
+  // 之后 data[NaN] 是 undefined，会静默污染整条航线（地速、时长、湍流全变 NaN）。
+  // 这里直接拒绝，让问题尽早暴露而不是传播成"看起来正常"的数字。
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    throw new Error(`sampleWind 收到非有限坐标: lat=${lat} lon=${lon}`);
+  }
+
   const g = field.grid;
   const dLat = (g.latMax - g.latMin) / (g.nLat - 1);
   const dLon = (g.lonMax - g.lonMin) / (g.nLon - 1);
@@ -275,7 +285,8 @@ export function sampleWind(
 
   out.u = u;
   out.v = v;
-  out.cat = Math.max(0, Math.min(1, cat));
+  // Float16 里存在 NaN 编码；NaN 比较恒为 false，Math.min/max 挡不住它。
+  out.cat = Number.isFinite(cat) ? Math.max(0, Math.min(1, cat)) : 0;
   out.tempK = temp;
   out.speed = Math.hypot(u, v);
   out.direction = (Math.atan2(-u, -v) * 180) / Math.PI;
@@ -330,7 +341,9 @@ export function pressureToLevelPos(field: WindField, hPa: number): number {
 
 /** 时间（Unix 毫秒）→ 步索引（可为小数） */
 export function timeToStepPos(field: WindField, timeMs: number): number {
-  const times = field.header.steps.map((s) => Date.parse(s.validTime));
+  // 用加载时预解析好的时间戳：这个函数在 UI 的依赖链里每次渲染都会调用，
+  // 早期版本每次都重新 Date.parse 整张表并分配新数组。
+  const times = field.stepTimestamps;
   if (!times.length) return 0;
   if (timeMs <= times[0]) return 0;
   if (timeMs >= times[times.length - 1]) return times.length - 1;
@@ -344,5 +357,5 @@ export function timeToStepPos(field: WindField, timeMs: number): number {
 }
 
 export function stepTimes(field: WindField): number[] {
-  return field.header.steps.map((s) => Date.parse(s.validTime));
+  return field.stepTimestamps;
 }
