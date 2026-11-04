@@ -15,6 +15,9 @@ import { createAirportLayer, type AirportLayer } from './airportLayer';
 import type { Airport } from '../state/store';
 import { disposeObject3D, disposeScene } from './dispose';
 import { detectDevice, type DeviceProfile } from './deviceProfile';
+import { createAircraftLayer, type AircraftLayer } from './aircraftLayer';
+import { createTrailLayer, type TrailLayer } from './trailLayer';
+import type { LiveFlight } from '../data/liveFlights';
 import { toVec3, fromVec3, slerp } from '../core/geo';
 import type { WindField } from '../data/windField';
 import { createWindTexture } from '../render/windTexture';
@@ -32,6 +35,8 @@ export type SceneCallbacks = {
   onPick?: (lat: number, lon: number) => void;
   /** 点到机场点时触发（优先于 onPick） */
   onPickAirport?: (airport: Airport) => void;
+  /** 点到飞机图标时触发 */
+  onPickAircraft?: (callsign: string) => void;
   onStats?: (stats: SceneStats) => void;
   onReady?: () => void;
 };
@@ -58,6 +63,9 @@ export class GlobeScene {
   private markers: THREE.Group = new THREE.Group();
   private aircraftMarker: THREE.Group | null = null;
   private airportLayer: AirportLayer | null = null;
+  private aircraftLayer: AircraftLayer | null = null;
+  private trailLayer: TrailLayer | null = null;
+  private lastFlights: LiveFlight[] = [];
   private rulerGroup: THREE.Group | null = null;
 
   private clock = new THREE.Clock();
@@ -82,7 +90,16 @@ export class GlobeScene {
   private currentLevelPos = 1;
   private currentStepPos = 0;
   private lastLevelPos = -1;
-  private visibleLayers = { jet: true, gc: true, rhumb: false, cat: true, grid: false, airports: true };
+  private visibleLayers = {
+    jet: true,
+    gc: true,
+    rhumb: false,
+    cat: true,
+    grid: false,
+    airports: true,
+    aircraft: true,
+    trails: true,
+  };
 
   constructor(container: HTMLElement, callbacks: SceneCallbacks = {}) {
     this.container = container;
@@ -163,6 +180,7 @@ export class GlobeScene {
       return { frames: n, jet: !!this.jet };
     };
     w.__aeroState = () => ({
+      aircraft: this.lastFlights.length,
       running: this.running,
       raf: this.raf,
       frames: this.framesRendered,
@@ -242,6 +260,31 @@ export class GlobeScene {
     this.earth.renderOrder = 0;
     this.scene.add(this.earth);
     this.cb.onReady?.();
+  }
+
+  /** 装载飞机与尾迹图层 */
+  attachAircraft(): void {
+    if (this.disposedFlag) return;
+    if (!this.aircraftLayer) {
+      this.aircraftLayer = createAircraftLayer();
+      this.scene.add(this.aircraftLayer.group);
+    }
+    if (!this.trailLayer) {
+      this.trailLayer = createTrailLayer();
+      this.scene.add(this.trailLayer.group);
+    }
+  }
+
+  /** 用最新航班快照更新图标；tracked 为需要保留尾迹的呼号 */
+  setFlights(flights: LiveFlight[], tracked: string[] = []): void {
+    this.lastFlights = flights;
+    this.aircraftLayer?.update(flights);
+    this.trailLayer?.push(flights, tracked);
+  }
+
+  /** 高亮某架飞机 */
+  setSelectedAircraft(callsign: string | null): void {
+    this.aircraftLayer?.setSelected(callsign);
   }
 
   async attachWind(field: WindField): Promise<void> {
@@ -354,7 +397,7 @@ export class GlobeScene {
   }
 
   setLayerVisibility(
-    layer: 'jet' | 'gc' | 'rhumb' | 'cat' | 'grid' | 'airports',
+    layer: 'jet' | 'gc' | 'rhumb' | 'cat' | 'grid' | 'airports' | 'aircraft' | 'trails',
     on: boolean,
   ): void {
     this.visibleLayers[layer] = on;
@@ -459,6 +502,41 @@ export class GlobeScene {
     step();
   }
 
+  /** 相机方位角（度）：屏幕"上"方向对应的地理方位，用于罗盘 */
+  cameraHeadingDeg(): number {
+    // three.js 的 camera 在 lookAt 原点后，其本地 up 投影到切平面即为"屏幕上"
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    const pos = this.camera.position.clone().normalize();
+    // 切平面上的北向
+    const north = new THREE.Vector3(0, 1, 0);
+    north.sub(pos.clone().multiplyScalar(north.dot(pos))).normalize();
+    // 切平面上的东向
+    const east = new THREE.Vector3().crossVectors(north, pos).normalize();
+    const upN = up.dot(north);
+    const upE = up.dot(east);
+    return (Math.atan2(upE, upN) * 180) / Math.PI;
+  }
+
+  /** 复位到初始视角（默认俯视大西洋） */
+  resetView(duration = 600): void {
+    const from = this.camera.position.clone();
+    const target = toVec3(22, -38, 3.05);
+    const to = new THREE.Vector3(target[0], target[1], target[2]);
+    const t0 = performance.now();
+
+    const step = () => {
+      if (this.disposedFlag) return;
+      const k = Math.min(1, (performance.now() - t0) / duration);
+      // easeOutCubic
+      const e = 1 - Math.pow(1 - k, 3);
+      this.camera.position.lerpVectors(from, to, e);
+      this.controls.target.set(0, 0, 0);
+      this.controls.update();
+      if (k < 1) requestAnimationFrame(step);
+    };
+    step();
+  }
+
   getCameraLatLon(): { lat: number; lon: number; distance: number } {
     const p = this.camera.position;
     const ll = fromVec3([p.x, p.y, p.z]);
@@ -510,7 +588,15 @@ export class GlobeScene {
       const timeTol = isTouch ? 700 : 400;
       if (moved >= moveTol || dt >= timeTol) return;
 
-      // 机场点优先：点中了给机场，没点中退化成经纬度
+      // 拾取优先级：飞机 > 机场 > 球面经纬度。
+      // 飞机画在机场之上，所以先判——用户点一架停在机场的飞机时
+      // 想看的是飞机，不是那座机场。
+      const acIdx = this.pickAircraft(e.clientX, e.clientY);
+      if (acIdx >= 0 && this.lastFlights[acIdx]) {
+        this.cb.onPickAircraft?.(this.lastFlights[acIdx].callsign);
+        return;
+      }
+
       const ap = this.pickAirport(e.clientX, e.clientY);
       if (ap) {
         this.cb.onPickAirport?.(ap);
@@ -575,6 +661,15 @@ export class GlobeScene {
   private keepTextures = new Set<THREE.Texture>();
   private aircraftMarkerTrail: Array<{ x: number; y: number; z: number }> = [];
 
+  /** 屏幕坐标 → 最近飞机（返回其在 lastFlights 的下标，-1 未命中） */
+  private pickAircraft(clientX: number, clientY: number): number {
+    if (!this.aircraftLayer || !this.aircraftLayer.group.visible) return -1;
+    const r = this.renderer.domElement.getBoundingClientRect();
+    const nx = ((clientX - r.left) / r.width) * 2 - 1;
+    const ny = -((clientY - r.top) / r.height) * 2 + 1;
+    return this.aircraftLayer.pick(nx, ny, this.camera, this.renderer.domElement.clientHeight);
+  }
+
   /** 屏幕坐标 → 最近机场（若无则 null） */
   private pickAirport(clientX: number, clientY: number): Airport | null {
     if (!this.airportLayer || !this.airportLayer.group.visible) return null;
@@ -637,7 +732,9 @@ export class GlobeScene {
     }
 
     // 机场点大小随相机距离自适应，缩放到近处不会糊成一片
-    this.airportLayer?.update(this.camera.position.length());
+    const camDist = this.camera.position.length();
+    this.airportLayer?.update(camDist);
+    this.aircraftLayer?.setCameraDistance(camDist);
 
     this.renderer.render(this.scene, this.camera);
 
@@ -705,6 +802,8 @@ export class GlobeScene {
 
     this.jet?.dispose();
     this.airportLayer?.dispose();
+    this.aircraftLayer?.dispose();
+    this.trailLayer?.dispose();
     this.windTex?.dispose();
     this.controls.dispose();
 

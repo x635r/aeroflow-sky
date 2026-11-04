@@ -4,6 +4,9 @@ import { fetchLiveFlights, summarizeFlights, typeLabel, type LiveFlight } from '
 import { timeToStepPos } from '../../data/windField';
 import { msToKmh } from '../../core/atmos';
 import { CAT_RAMP, sampleRamp, toCss } from '../../render/palette';
+import { applyFilter, isFilterActive } from '../../data/flightFilter';
+import { parseCallsign, flagEmoji } from '../../data/airlines';
+import { CITY_ZH } from '../../data/airportNamesZh';
 
 /**
  * 实时航班侧栏
@@ -29,6 +32,9 @@ export function LiveFlightsPanel() {
   const selectFlight = useStore((s) => s.selectFlight);
   const [collapsed, setCollapsed] = useState(false);
   const [filter, setFilter] = useState<'all' | 'tail' | 'head'>('all');
+  const globalFilter = useStore((s) => s.flightFilter);
+  const filterOpen = useStore((s) => s.filterOpen);
+  const toggleFilterPanel = useStore((s) => s.toggleFilterPanel);
   const [reloadKey, setReloadKey] = useState(0);
 
   const stepPos = useMemo(() => (field ? timeToStepPos(field, timeMs) : 0), [field, timeMs]);
@@ -77,7 +83,10 @@ export function LiveFlightsPanel() {
 
   const load = () => setReloadKey((k) => k + 1);
 
-  const flights = snap?.flights ?? EMPTY_FLIGHTS;
+  const allFlights = snap?.flights ?? EMPTY_FLIGHTS;
+  // 全局筛选器（FilterPanel）优先于本地的顺/逆风快捷切换，
+  // 两者叠加而不是互相覆盖——用户既筛了航司又想看顺风的很常见
+  const flights = useMemo(() => applyFilter(allFlights, globalFilter), [allFlights, globalFilter]);
   const stats = useMemo(() => summarizeFlights(flights), [flights]);
 
   const shown = useMemo(() => {
@@ -173,6 +182,18 @@ export function LiveFlightsPanel() {
               </button>
             ))}
             <button
+              className="flights-filter-filter"
+              data-active={filterOpen || isFilterActive(globalFilter)}
+              onClick={toggleFilterPanel}
+              type="button"
+              title="打开筛选"
+              aria-label="打开航班筛选"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                <path d="M3 6h18M7 12h10M11 18h2" strokeLinecap="round" />
+              </svg>
+            </button>
+            <button
               className="flights-refresh"
               onClick={load}
               disabled={loading}
@@ -193,6 +214,12 @@ export function LiveFlightsPanel() {
               </svg>
             </button>
           </div>
+
+          {isFilterActive(globalFilter) && (
+            <div className="flights-filtered-note">
+              已筛选 · {shown.length} / {allFlights.length}
+            </div>
+          )}
 
           <div className="flights-list">
             {shown.length === 0 && (
@@ -240,6 +267,7 @@ function FlightRow({
 }) {
   const tailwind = f.windAlong;
   const tone = tailwind > 3 ? 'tail' : tailwind < -3 ? 'head' : 'neutral';
+  const { airline } = parseCallsign(f.callsign);
   const catColor = toCss(sampleRamp(CAT_RAMP, Math.min(1, Math.max(0, (f.cat - 0.2) / 0.7))));
 
   return (
@@ -252,7 +280,9 @@ function FlightRow({
       aria-pressed={active}
     >
       <div className="flight-main">
+        {airline && <span className="flight-flag">{flagEmoji(airline.cc)}</span>}
         <span className="flight-callsign mono">{f.callsign}</span>
+        {airline && <span className="flight-airline">{airline.nameZh}</span>}
         <span className="flight-type">{typeLabel(f.type)}</span>
         <span className="flight-wind mono" data-tone={tone}>
           {tailwind >= 0 ? '+' : ''}
@@ -261,8 +291,13 @@ function FlightRow({
         </span>
       </div>
       <div className="flight-sub">
-        <span className="mono">
+        <span className="mono" title={`${CITY_ZH[f.origin] ?? f.origin} → ${CITY_ZH[f.destination] ?? f.destination}`}>
           {f.origin} <span style={{ color: 'var(--text-faint)' }}>→</span> {f.destination}
+          {CITY_ZH[f.origin] && (
+            <span className="flight-route-zh">
+              {CITY_ZH[f.origin]}–{CITY_ZH[f.destination] ?? f.destination}
+            </span>
+          )}
         </span>
         <span className="mono" style={{ color: 'var(--text-dim)' }}>
           {msToKmh(f.groundSpeed).toFixed(0)} km/h

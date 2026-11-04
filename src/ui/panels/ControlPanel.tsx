@@ -5,6 +5,8 @@ import { AIRCRAFT, aircraftById, pressureToAltitude, metersToFlightLevel } from 
 import type { LayerState } from '../../state/store';
 
 const LAYER_META: Array<{ key: keyof LayerState; label: string; color: string }> = [
+  { key: 'aircraft', label: '飞机', color: '#7fd9f0' },
+  { key: 'trails', label: '尾迹', color: '#5ee7c4' },
   { key: 'jet', label: '急流粒子', color: 'var(--jet)' },
   { key: 'gc', label: '大圆基准', color: '#8fa8bd' },
   { key: 'cat', label: '湍流区', color: 'var(--hot)' },

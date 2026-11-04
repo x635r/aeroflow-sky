@@ -12,6 +12,7 @@ import { timeToStepPos, pressureToLevelPos } from '../data/windField';
 import { comparePlans, type Comparison, type PlanContext } from '../sim/routeEngine';
 import type { LatLon } from '../core/geo';
 import type { LiveFlight, LiveSnapshot } from '../data/liveFlights';
+import { EMPTY_FILTER, type FlightFilter } from '../data/flightFilter';
 
 export type Airport = {
   iata: string;
@@ -31,6 +32,10 @@ export type LayerState = {
   rhumb: boolean;
   cat: boolean;
   grid: boolean;
+  /** 飞机图标 */
+  aircraft: boolean;
+  /** 尾迹 */
+  trails: boolean;
 };
 
 export type LoadingStage =
@@ -72,6 +77,14 @@ type State = {
   liveLoading: boolean;
   /** 选中的航班呼号（用于详情面板与渲染高亮） */
   selectedFlight: string | null;
+  /** 航班筛选条件 */
+  flightFilter: FlightFilter;
+  /** 选中的机场（IATA），用于机场看板 */
+  selectedAirport: string | null;
+  /** 筛选面板是否打开 */
+  filterOpen: boolean;
+  /** 全局搜索是否打开 */
+  searchOpen: boolean;
   /** 是否显示机场点图层 */
   showAirports: boolean;
   /** 测距工具：已点选的两个点 */
@@ -99,6 +112,12 @@ type State = {
   recompute: () => void;
   setHover: (h: { lat: number; lon: number } | null) => void;
   selectFlight: (callsign: string | null) => void;
+  setFlightFilter: (f: FlightFilter) => void;
+  patchFlightFilter: (patch: Partial<FlightFilter>) => void;
+  resetFlightFilter: () => void;
+  selectAirport: (iata: string | null) => void;
+  toggleFilterPanel: () => void;
+  setSearchOpen: (v: boolean) => void;
   setLiveSnapshot: (s: LiveSnapshot | null) => void;
   setLiveLoading: (v: boolean) => void;
   /** 按呼号取当前选中的航班对象 */
@@ -152,7 +171,7 @@ export const useStore = create<State>((set, get) => ({
   cruiseAltM: 10_700,
   pressureHpa: 250,
   timeMs: Date.now(),
-  layers: { jet: true, gc: true, rhumb: false, cat: true, grid: false },
+  layers: { jet: true, gc: true, rhumb: false, cat: true, grid: false, aircraft: true, trails: true },
   showReturn: false,
 
   result: null,
@@ -161,6 +180,10 @@ export const useStore = create<State>((set, get) => ({
   liveSnapshot: null,
   liveLoading: false,
   selectedFlight: null,
+  flightFilter: EMPTY_FILTER,
+  selectedAirport: null,
+  filterOpen: false,
+  searchOpen: false,
   showAirports: true,
   rulerPoints: [],
   rulerMode: false,
@@ -249,6 +272,29 @@ export const useStore = create<State>((set, get) => ({
 
   selectFlight: (callsign) =>
     set((s) => ({ selectedFlight: s.selectedFlight === callsign ? null : callsign })),
+
+  setFlightFilter: (flightFilter) => set({ flightFilter }),
+  patchFlightFilter: (patch) =>
+    set((s) => ({ flightFilter: { ...s.flightFilter, ...patch } })),
+  resetFlightFilter: () => set({ flightFilter: EMPTY_FILTER }),
+
+  selectAirport: (iata) =>
+    set((s) => ({
+      selectedAirport: s.selectedAirport === iata ? null : iata,
+      // 反之亦然：开看板时关筛选
+      filterOpen: iata && s.selectedAirport !== iata ? false : s.filterOpen,
+      selectedFlight: null,
+    })),
+
+
+  setSearchOpen: (searchOpen) => set({ searchOpen }),
+
+  toggleFilterPanel: () =>
+    set((s) => ({
+      filterOpen: !s.filterOpen,
+      // 同一位置只能放一个浮层：开筛选时关掉机场看板
+      selectedAirport: !s.filterOpen ? null : s.selectedAirport,
+    })),
 
   setLiveSnapshot: (liveSnapshot) =>
     set((s) => {

@@ -12,6 +12,11 @@ import { TurbulencePanel } from './panels/TurbulencePanel';
 import { FlightDetailPanel } from './panels/FlightDetailPanel';
 import { RulerPanel } from './panels/RulerPanel';
 import { MobileSheet, type MobileTab } from './components/MobileSheet';
+import { FilterPanel } from './panels/FilterPanel';
+import { GlobalSearch } from './components/GlobalSearch';
+import { MapToolbar, AltitudeLegend } from './components/MapToolbar';
+import { AirportBoard } from './panels/AirportBoard';
+import { applyFilter } from '../data/flightFilter';
 import { RouteProfile } from './panels/RouteProfile';
 import { LoadingScreen } from './components/LoadingScreen';
 import { levelPosOf } from '../state/store';
@@ -26,6 +31,24 @@ export function App() {
   const cursorRef = useRef<HTMLDivElement>(null);
   // 移动端抽屉的当前标签（桌面端不生效）
   const [mobileTab, setMobileTab] = useState<MobileTab>('result');
+  const [cameraHeading, setCameraHeading] = useState(0);
+
+  // 罗盘方位角：4Hz 足够，没必要每帧 setState
+  useEffect(() => {
+    let raf = 0;
+    let last = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const now = performance.now();
+      if (now - last < 250) return;
+      last = now;
+      const scene = sceneRef.current;
+      if (scene) setCameraHeading(scene.cameraHeadingDeg());
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   const [isMobile, setIsMobile] = useState(
     () =>
       typeof window !== 'undefined' &&
@@ -52,6 +75,13 @@ export function App() {
   const showAirports = useStore((s) => s.showAirports);
   const selectedFlight = useStore((s) => s.selectedFlight);
   const rulerPoints = useStore((s) => s.rulerPoints);
+  const liveSnapshot = useStore((s) => s.liveSnapshot);
+  const flightFilter = useStore((s) => s.flightFilter);
+  const filterOpen = useStore((s) => s.filterOpen);
+  const toggleFilterPanel = useStore((s) => s.toggleFilterPanel);
+  const selectedAirport = useStore((s) => s.selectedAirport);
+  const searchOpen = useStore((s) => s.searchOpen);
+  const setSearchOpen = useStore((s) => s.setSearchOpen);
   const showIntro = useStore((s) => s.showIntro);
   const dismissIntro = useStore((s) => s.dismissIntro);
   const recompute = useStore((s) => s.recompute);
@@ -64,6 +94,10 @@ export function App() {
 
     const scene = new GlobeScene(host, {
       onHover: (lat, lon) => setHover({ lat, lon }),
+      onPickAircraft: (callsign) => {
+        // 点飞机：直接从地球选中该航班
+        useStore.getState().selectFlight(callsign);
+      },
       onPickAirport: (ap) => {
         const s = useStore.getState();
         // 测距模式优先：围着枢纽点测距时，点到的全是机场，
@@ -72,9 +106,10 @@ export function App() {
           s.addRulerPoint({ lat: ap.lat, lon: ap.lon, label: ap.iata });
           return;
         }
-        // 点机场：按当前起降状态填入起点或终点
-        if (!s.from || (s.from && s.to)) s.setEndpoints(ap, s.to === ap ? null : s.to);
-        else s.setEndpoints(s.from, ap);
+        // 点机场：打开看板（FR24 式交互），起降点由看板里的按钮设置。
+        // 直接改起降点太"重"——用户多半只是想看这座机场。
+        s.selectAirport(ap.iata);
+        s.selectFlight(null);
       },
       onPick: (lat, lon) => {
         const st = useStore.getState();
@@ -151,6 +186,7 @@ export function App() {
         };
         initData(wind, manifest as never, ap.airports);
         scene.attachAirports(ap.airports);
+        scene.attachAircraft();
 
         // 默认航线：如果有 JFK/LHR 就用它们
         const jfk = ap.airports.find((a) => a.iata === 'JFK');
@@ -218,8 +254,23 @@ export function App() {
     scene.setLayerVisibility('cat', layers.cat);
     scene.setLayerVisibility('grid', layers.grid);
     scene.setLayerVisibility('airports', showAirports);
+    scene.setLayerVisibility('aircraft', layers.aircraft);
+    scene.setLayerVisibility('trails', layers.trails);
     scene.setJetParams({ showCat: layers.cat });
   }, [layers, showAirports]);
+
+  // ---------- 航班快照 → 地球上的飞机图标 ----------
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene || !liveSnapshot) return;
+    // 选中那架保留尾迹，避免给全部 4000 架存历史
+    const tracked = selectedFlight ? [selectedFlight] : [];
+    // 3D 图层也要遵守筛选：否则列表显示 3 架而地球上画着 800 架，
+    // 用户会以为是显示 bug
+    const visible = applyFilter(liveSnapshot.flights, flightFilter);
+    scene.setFlights(visible, tracked);
+    scene.setSelectedAircraft(selectedFlight);
+  }, [liveSnapshot, selectedFlight, flightFilter]);
 
   // ---------- 测距线 ----------
   useEffect(() => {
@@ -244,6 +295,34 @@ export function App() {
     mq.addListener(apply);
     return () => mq.removeListener(apply);
   }, []);
+
+  // ---------- 键盘快捷键 ----------
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      // 输入框里不劫持按键
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+
+      if (e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) {
+        e.preventDefault();
+        setSearchOpen(true);
+      } else if (e.key === 'Escape') {
+        const s = useStore.getState();
+        if (s.searchOpen) s.setSearchOpen(false);
+        else if (s.filterOpen) s.toggleFilterPanel();
+        else if (s.selectedAirport) s.selectAirport(null);
+        else if (s.selectedFlight) s.selectFlight(null);
+      } else if (e.key === 'r' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        sceneRef.current?.resetView();
+      } else if (e.key === 'f' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        useStore.getState().toggleFilterPanel();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [setSearchOpen]);
 
   // ---------- 指针跟随 ----------
   // 用 ref 直接改 transform，不走 React state：指针每次移动都 setState
@@ -316,7 +395,13 @@ export function App() {
 
 
   return (
-    <div className="app" data-mobile={isMobile} data-sheet-open={isMobile && mobileTab !== null}>
+    <div
+      className="app"
+      data-mobile={isMobile}
+      data-sheet-open={isMobile && mobileTab !== null}
+      data-filter={filterOpen}
+      data-board={Boolean(selectedAirport)}
+    >
       <div className="globe-host" ref={hostRef} />
 
       <div className="ui-layer">
@@ -344,6 +429,19 @@ export function App() {
           </div>
 
           <div className="topbar-right">
+            <button
+              className="search-trigger"
+              onClick={() => setSearchOpen(true)}
+              type="button"
+              aria-label="搜索航班、机场或航司"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M16.5 16.5L21 21" strokeLinecap="round" />
+              </svg>
+              <span>搜索</span>
+              <kbd>/</kbd>
+            </button>
             <span className="status-pill">
               <span className="status-dot" data-tone={loading.stage === 'ready' ? undefined : 'busy'} />
               {loading.stage === 'ready'
@@ -377,9 +475,16 @@ export function App() {
             <LiveFlightsPanel />
             <TurbulencePanel />
             <RulerPanel />
+            {filterOpen && <FilterPanel onClose={toggleFilterPanel} />}
+            {selectedAirport && <AirportBoard iata={selectedAirport} />}
             {selectedFlight && <FlightDetailPanel />}
             <TimeBar />
             <ProfileDock cursorIndex={profileCursor} />
+            <MapToolbar
+              cameraHeading={cameraHeading}
+              onReset={() => sceneRef.current?.resetView()}
+            />
+            <AltitudeLegend />
           </>
         )}
 
@@ -391,6 +496,9 @@ export function App() {
                 <ControlPanel />
                 <RulerPanel />
               </>
+            )}
+            {mobileTab === 'flights' && filterOpen && (
+              <FilterPanel onClose={toggleFilterPanel} />
             )}
             {mobileTab === 'result' && (
               <>
@@ -419,8 +527,16 @@ export function App() {
 
         {/* 时间轴在两种布局下都需要 */}
         {isMobile && <TimeBar />}
+        {isMobile && (
+          <MapToolbar
+            cameraHeading={cameraHeading}
+            onReset={() => sceneRef.current?.resetView()}
+          />
+        )}
 
         {hover && <CursorCross ref={cursorRef} />}
+
+        {searchOpen && <GlobalSearch onClose={() => setSearchOpen(false)} />}
 
         {showIntro && <IntroOverlay onDismiss={dismissIntro} />}
       </div>

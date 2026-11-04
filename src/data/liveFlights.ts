@@ -111,6 +111,35 @@ function enrich(
 }
 
 /** 合成演示航班：沿真实大圆铺开，位置随机但确定（同一时刻结果一致） */
+/**
+ * 模拟一个符合真实分布的飞行高度（米）。
+ *
+ * 真实空域里绝大多数飞机在巡航，但总有正在爬升/下降的。
+ * 用 70% 巡航、15% 爬升、10% 下降、5% 进近的比例，
+ * 让高度带筛选与直方图有真实可看的分布。
+ */
+function simulateAltitude(
+  i: number,
+  cruiseAltM: number,
+  rnd: (i: number, k: number) => number,
+): number {
+  const phase = rnd(i, 7);
+  if (phase < 0.7) {
+    // 巡航：轻微高度层差异
+    return cruiseAltM + (rnd(i, 2) - 0.5) * 600;
+  }
+  if (phase < 0.85) {
+    // 爬升：巡航高度的 40%–95%
+    return cruiseAltM * (0.4 + rnd(i, 3) * 0.55);
+  }
+  if (phase < 0.95) {
+    // 下降：巡航高度的 35%–85%
+    return cruiseAltM * (0.35 + rnd(i, 4) * 0.5);
+  }
+  // 进近：1500–4500 m
+  return 1500 + rnd(i, 5) * 3000;
+}
+
 export function simulateFlights(
   field: WindField,
   stepPos: number,
@@ -163,7 +192,10 @@ export function simulateFlights(
       callsign: `${['AAL', 'UAL', 'DAL', 'BAW', 'KLH', 'AFR', 'CPA', 'JAL'][i % 8]}${100 + ((i * 137) % 899)}`,
       lat: p.lat,
       lon: p.lon,
-      altitudeM: ac.cruiseAltM + (rnd(i, 2) - 0.5) * 600,
+      // 模拟航班不能全部钉在巡航高度——那会让高度直方图只有一个柱子，
+      // 筛选器也就失去意义。按真实运行剖面分布：
+      // 大部分巡航，少数在爬升/下降，极少数在进近。
+      altitudeM: simulateAltitude(i, ac.cruiseAltM, rnd),
       groundSpeed: tri2.groundSpeed,
       track: finalTrack,
       type: ac.shortName,
