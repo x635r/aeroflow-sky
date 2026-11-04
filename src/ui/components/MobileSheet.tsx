@@ -67,16 +67,28 @@ export function MobileSheet({ active, onChange, children }: Props) {
       // getComputedStyle 仍报 46px（flex 容器的 height 计算被 flex-basis
       // 干扰）。内联样式优先级最高，能确保结果确定。
       const el = document.querySelector('.msheet') as HTMLElement | null;
-      if (el) el.style.height = expanded ? `${sheetH}px` : TABS_HEIGHT;
+      if (el) {
+        const h = expanded ? `${sheetH}px` : TABS_HEIGHT;
+        el.style.height = h;
+        // 同时写 minHeight：flex 容器里的 height 可能被 flex-shrink 压成
+        // 1px（线上实测过），min-height 不会被压缩，是可靠的兜底。
+        el.style.minHeight = h;
+      }
     };
 
     apply();
-    // 首次挂载时 .msheet 可能还没渲染，下一帧再补一次
+    // 首次挂载时 .msheet 可能还没渲染。rAF 不够——React 的提交时机
+    // 与 rAF 顺序不保证，实测线上首帧拿到 240px 下限而没拿到 557px 目标值。
+    // 用 rAF + 短延时双保险。
     const raf = requestAnimationFrame(apply);
+    const t1 = setTimeout(apply, 60);
+    const t2 = setTimeout(apply, 200);
     window.addEventListener('resize', apply);
     window.addEventListener('orientationchange', apply);
     return () => {
       cancelAnimationFrame(raf);
+      clearTimeout(t1);
+      clearTimeout(t2);
       window.removeEventListener('resize', apply);
       window.removeEventListener('orientationchange', apply);
     };

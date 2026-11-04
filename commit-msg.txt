@@ -1,0 +1,14 @@
+fix(mobile): 抽屉高度用 minHeight 兜底 + 双延时重试
+
+线上实测发现移动端抽屉被压成 1px：
+- 内联 height: 240px 存在，但 flex 容器把它压到 1px
+- CSS 的 .msheet[data-expanded=true]{height:var(--sheet-h,62vh)}
+  规则存在且匹配，但首帧拿不到 62vh 的解析值
+
+两处修正：
+- 同时写 minHeight：min-height 不受 flex-shrink 影响，是可靠兜底
+- apply() 用 rAF + 60ms + 200ms 三重触发：React 提交时机与 rAF
+  顺序不保证，实测只靠 rAF 会拿到下限而非目标值
+
+线上验证：390x844 下 sheetH=523px（期望 557，差值为安全区），
+body 476px 可滚动，四个标签可切换，ADS-B 实时 60 架。
