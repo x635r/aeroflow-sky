@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { RoutePoint } from '../../sim/routeEngine';
+import { CAT_AFFECTED_THRESHOLD, type RoutePoint } from '../../sim/routeEngine';
 import { msToKmh } from '../../core/atmos';
 import { WIND_RAMP, CAT_RAMP, sampleRamp, toCss } from '../../render/palette';
 
@@ -163,7 +163,7 @@ export function RouteProfile({ points, cursorIndex }: Props) {
           {/* 湍流带 */}
           {bandData.map((b, i) => {
             if (b.cat < 0.3) return null;
-            const c = sampleRamp(CAT_RAMP, Math.min(1, (b.cat - 0.3) / 0.6));
+            const c = sampleRamp(CAT_RAMP, Math.min(1, (b.cat - CAT_AFFECTED_THRESHOLD) / 0.6));
             return (
               <rect
                 key={`c${i}`}

@@ -189,7 +189,10 @@ export function createAircraftLayer(): AircraftLayer {
         // 内芯提亮，让颜色在深色描边上跳出来
         if (isCore > 0.5) col *= 1.35;
 
-        gl_FragColor = vec4(col * alpha, alpha);
+        // 预乘 alpha 配 One/One 混合：颜色已乘 alpha，alpha 通道写 1.0。
+        // 写成 vec4(col*alpha, alpha) 会让 alpha 也参与累加，
+        // 在多层叠加时边缘会越叠越实，与项目其它图层的行为不一致。
+        gl_FragColor = vec4(col * alpha, 1.0);
       }
     `,
     transparent: true,

@@ -12,6 +12,7 @@
 
 import type { LiveFlight } from './liveFlights';
 import { parseCallsign } from './airlines';
+import { CAT_AFFECTED_THRESHOLD } from '../sim/routeEngine';
 
 /** 高度带（米）——与 aircraftLayer 的配色分带保持一致 */
 export const ALTITUDE_BANDS_FILTER = [
@@ -91,7 +92,7 @@ export function matchesFilter(flight: LiveFlight, f: FlightFilter): boolean {
   if (f.windMode === 'head' && flight.windAlong >= -3) return false;
 
   // ---- 湍流 ----
-  if (f.turbulenceOnly && flight.cat < 0.45) return false;
+  if (f.turbulenceOnly && flight.cat < CAT_AFFECTED_THRESHOLD) return false;
 
   // ---- 文本：空格分隔的每个词都必须命中某个字段 ----
   const q = f.query.trim().toLowerCase();

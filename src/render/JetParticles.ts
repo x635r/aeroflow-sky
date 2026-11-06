@@ -673,12 +673,10 @@ export class JetParticles {
     this.compositeMaterial.dispose();
     (this.points.geometry as THREE.BufferGeometry).dispose();
     (this.sphere.geometry as THREE.BufferGeometry).dispose();
-    // quadGeo 被 quad 与 fadeQuad 共用，两处都要释放
-    (this.quad.geometry as THREE.BufferGeometry).dispose();
-    for (const child of this.fadeScene.children) {
-      const m = child as THREE.Mesh;
-      if (m.geometry) m.geometry.dispose();
-    }
+    // simScene 与 fadeScene 里的两个 Mesh 共用同一个 quadGeo，
+    // 只释放一次（second dispose 虽然幂等，但会掩盖"到底谁持有"的问题）。
+    const sharedQuad = this.quad.geometry as THREE.BufferGeometry;
+    sharedQuad.dispose();
   }
 }
 

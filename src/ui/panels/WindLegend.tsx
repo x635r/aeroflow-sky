@@ -4,6 +4,7 @@ import { WIND_RAMP, CAT_RAMP, rampToCss } from '../../render/palette';
 import { probePoint, type PlanContext } from '../../sim/routeEngine';
 import { msToKmh, aircraftById } from '../../core/atmos';
 import { timeToStepPos } from '../../data/windField';
+import { CAT_LEVELS } from '../../sim/routeEngine';
 
 /**
  * 左下角：风速色标 + 悬停探针
@@ -89,7 +90,11 @@ export function WindLegend() {
             <dd
               style={{
                 color:
-                  probe.cat > 0.6 ? 'var(--danger)' : probe.cat > 0.4 ? 'var(--hot)' : 'var(--text)',
+                  probe.cat > CAT_LEVELS.severe
+                    ? 'var(--danger)'
+                    : probe.cat > CAT_LEVELS.moderate
+                      ? 'var(--hot)'
+                      : 'var(--text)',
               }}
             >
               {probe.cat.toFixed(2)}

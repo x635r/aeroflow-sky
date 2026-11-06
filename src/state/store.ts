@@ -11,7 +11,7 @@ import type { WindField, WindManifest } from '../data/windField';
 import { timeToStepPos, pressureToLevelPos } from '../data/windField';
 import { comparePlans, type Comparison, type PlanContext } from '../sim/routeEngine';
 import type { LatLon } from '../core/geo';
-import type { LiveFlight, LiveSnapshot } from '../data/liveFlights';
+import type { LiveSnapshot } from '../data/liveFlights';
 import { EMPTY_FILTER, type FlightFilter } from '../data/flightFilter';
 
 export type Airport = {
@@ -121,7 +121,6 @@ type State = {
   setLiveSnapshot: (s: LiveSnapshot | null) => void;
   setLiveLoading: (v: boolean) => void;
   /** 按呼号取当前选中的航班对象 */
-  selectedFlightData: () => LiveFlight | null;
   toggleAirports: () => void;
   addRulerPoint: (p: { lat: number; lon: number; label?: string }) => void;
   clearRuler: () => void;
@@ -130,7 +129,6 @@ type State = {
   dismissIntro: () => void;
   setSheet: (s: State['activeSheet']) => void;
   swapEndpoints: () => void;
-  planContext: () => PlanContext | null;
 };
 
 // 未压缩的 compute 放在模块级，避免 store 里塞长函数体
@@ -310,12 +308,6 @@ export const useStore = create<State>((set, get) => ({
     }),
   setLiveLoading: (liveLoading) => set({ liveLoading }),
 
-  selectedFlightData: () => {
-    const s = get();
-    if (!s.selectedFlight || !s.liveSnapshot) return null;
-    return s.liveSnapshot.flights.find((f) => f.callsign === s.selectedFlight) ?? null;
-  },
-
   toggleAirports: () =>
     set((s) => {
       const next = !s.showAirports;
@@ -341,17 +333,6 @@ export const useStore = create<State>((set, get) => ({
     queueMicrotask(() => get().recompute());
   },
 
-  planContext: () => {
-    const s = get();
-    if (!s.field) return null;
-    return {
-      field: s.field,
-      pressureHpa: s.pressureHpa,
-      stepPos: timeToStepPos(s.field, s.timeMs),
-      aircraft: aircraftById(s.aircraftId),
-      mach: s.mach,
-    };
-  },
 }));
 
 /** 便捷派生：层索引 */

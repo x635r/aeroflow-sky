@@ -3350,3 +3350,29 @@ input[type='range']::-moz-range-thumb {
   margin-left: 5px;
   font-family: var(--font-ui);
 }
+
+/* 推演结果：不可行航段警告 */
+.rp-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 9px 13px;
+  margin: 0;
+  font-size: 9.5px;
+  line-height: 1.6;
+  color: #ffd9a8;
+  background: rgba(255, 138, 76, 0.1);
+  border-bottom: 1px solid rgba(255, 138, 76, 0.25);
+  flex-shrink: 0;
+}
+
+.rp-warn svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: #ff9f6b;
+}
+
+.rp-warn b {
+  color: #ffc86b;
+  font-weight: 600;
+}

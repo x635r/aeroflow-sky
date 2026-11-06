@@ -1,14 +1,45 @@
-fix(mobile): 抽屉高度用 minHeight 兜底 + 双延时重试
+fix: 审查修复 4 个真实缺陷 + 补齐 74 项回归测试
 
-线上实测发现移动端抽屉被压成 1px：
-- 内联 height: 240px 存在，但 flex 容器把它压到 1px
-- CSS 的 .msheet[data-expanded=true]{height:var(--sheet-h,62vh)}
-  规则存在且匹配，但首帧拿不到 62vh 的解析值
+1. 不可行航段导致距离静默缩水 8%
+   integrateLegs 用 continue 跳过风太强的航段，但这个 continue
+   同时跳过了距离累加——实测 6672km 的航线只积出 6116km，
+   时长同比例偏短，界面上完全看不出来。
+   改为保留几何距离（路还是要走），地速记 1 m/s 占位，
+   并新增 infeasibleLegs 统计；UI 在结果面板顶部显示橙色警告
+   「有 N 段航路的风超过真空速，物理上飞不出来」。
 
-两处修正：
-- 同时写 minHeight：min-height 不受 flex-shrink 影响，是可靠兜底
-- apply() 用 rAF + 60ms + 200ms 三重触发：React 提交时机与 rAF
-  顺序不保证，实测只靠 rAF 会拿到下限而非目标值
+2. 极点风矢量随查询经度旋转 360°
+   GFS 在极点给的是一圈网格，同一风矢量在不同经度被分解成不同的
+   (u,v) 分量。直接双线性插值让「极点风」沿经度转一圈
+   （实测 u/v 极差 36–47 m/s，最大 71 m/s），而物理上极点风唯一。
+   - bake_wind.py 新增极点行矢量平均（还原成三维再平均，不是算术平均）
+   - 新增 scripts/fix_poles.py 对已有数据原地修正
+   - 修正后极差 0.000 m/s，跨极航线不再漂移
 
-线上验证：390x844 下 sheetH=523px（期望 557，差值为安全区），
-body 476px 可滚动，四个标签可切换，ADS-B 实时 60 架。
+3. store 里两个派生方法会引发无限重渲染
+   planContext() / selectedFlightData() 每次返回新对象，一旦有人
+   写成 useStore(s => s.planContext()) 就会死循环（本项目坡过）。
+   全仓 grep 确认零调用，直接删除而不是留着当陷阱。
+
+4. aircraftLayer 的 alpha 通道与全项目不一致
+   输出 vec4(col*alpha, alpha) 配 One/One 混合，alpha 也参与累加，
+   多层叠加时边缘越叠越实。改为 vec4(col*alpha, 1.0)。
+
+其他
+- CAT 阈值最后 4 处硬编码（0.45/0.6/0.4/0.3）全部指向 CAT_LEVELS 常量表
+- sampleWind 热路径去掉每次调用的 4 个数组分配（标量化）
+- JetParticles.dispose 清理共享 quadGeo 的重复释放
+
+审查方法
+- 新增 numericalAudit.test.ts（51 项）：大圆距离/方位角/恒向线/ISA/风三角
+  全部对照公开权威值（JFK-LHR 5555km、赤道 40030km、250hPa 10363m 等）。
+  过程中发现 5 条「测试期望值写错」而代码正确，已逐条核实修正。
+- 新增 extremeWinds.test.ts（14 项）：不可行航段不缩水、分量分解正确、
+  几何保真
+- 新增 dpQuality.test.ts（3 项）：75 个（时效×层×航线）组合零违反
+  「借风不慢于大圆」；纬向折返 ≤2 次（无锯齿）
+- 新增 performance.test.ts（3 项）：采样 612 万次/秒、单次 DP 31ms、
+  完整对比 36ms
+- 新增 windFieldIntegrity.test.ts：极点恒定、首末列接缝为零
+
+测试 125 → 199 项，全部通过。

@@ -89,6 +89,14 @@ export type RouteResult = {
   deviationDeg: number;
   /** 相对大圆多飞的距离（米） */
   extraDistance: number;
+  /**
+   * 因风太强而物理上飞不出来的航段数。
+   *
+   * 非零时 duration 不代表"实际飞行时间"——它混合了
+   * "这段路需要 1 m/s 才是真实代价"的占位值。UI 必须据此
+   * 显示警告而不是给出一个 161 小时的时间。
+   */
+  infeasibleLegs: number;
 };
 
 export type PlanContext = {
@@ -188,18 +196,33 @@ function integrateLegs(
       const tas = machToTas(ctx.mach, w.tempK);
       const tri = solveWindTriangle(track, tas, w);
       if (tri.infeasible) {
-        // 该段风太强、物理上飞不出来。跳过这一点而不是记下假地速，
-        // 否则时长会被严重低估（早期版本会让 DP 选中这种航段）。
-        continue;
+        // 该段风太强、物理上飞不出来。
+        //
+        // 这里**不能 continue**：continue 会连下面的距离累加一起跳过，
+        // 于是整条航线的距离被"打折"（实测 6672km 只积出 6116km，少 8%），
+        // 时长同比例偏短——而且这种错误完全静默，界面上看不出来。
+        //
+        // 正确做法：保留几何距离（路还是要走这些公里），
+        // 但把该段地速记为「极度不利」，让时长如实反映飞不动的代价。
+        leg = {
+          gs: 1,                      // 贴地下限：代表实际不可达
+          tas,
+          along: -tri.headwindComponent,
+          cross: tri.crosswindComponent,
+          track,
+        };
+        lastLeg = leg;
+        void tri.groundSpeed;
+      } else {
+        leg = {
+          gs: tri.groundSpeed,
+          tas,
+          along: -tri.headwindComponent,
+          cross: tri.crosswindComponent,
+          track,
+        };
+        lastLeg = leg;
       }
-      leg = {
-        gs: tri.groundSpeed,
-        tas,
-        along: -tri.headwindComponent,
-        cross: tri.crosswindComponent,
-        track,
-      };
-      lastLeg = leg;
     }
 
     const w = sampler.at(p.lat, p.lon);
@@ -279,6 +302,8 @@ function summarize(
   let maxCat = 0;
   // 距离加权的湍流航程，比点数加权更符合「飞多久会颠」的直觉
   let catDist = 0;
+  // 地速被压到 1 m/s 的点视为"飞不出来"的航段
+  let infeasibleLegs = 0;
   for (let i = 0; i < points.length; i++) {
     const p = points[i];
     sumAlong += p.windAlong;
@@ -287,6 +312,7 @@ function summarize(
     if (i < points.length - 1 && catLevelOf(p.cat) !== 'smooth') {
       catDist += points[i + 1].distance - p.distance;
     }
+    if (i < points.length - 1 && p.groundSpeed <= 1.5) infeasibleLegs++;
   }
   return {
     kind,
@@ -300,6 +326,7 @@ function summarize(
     catFraction: distance > 0 ? catDist / distance : 0,
     deviationDeg,
     extraDistance: distance - referenceDistance,
+    infeasibleLegs,
   };
 }
 

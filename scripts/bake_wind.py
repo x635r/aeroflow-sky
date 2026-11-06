@@ -275,6 +275,41 @@ def ellrod_cat(uv: dict, lat: np.ndarray, levels: list[int]) -> dict:
 # --------------------------------------------------------------------------- #
 
 
+def _pole_vector_mean(u_row: np.ndarray, v_row: np.ndarray, lat_deg: float):
+    """把极点纬圈上的 u/v 还原成三维风矢量再取平均。
+
+    物理事实：极点是单点，风矢量唯一。但 GFS 在极点处给的是一圈网格，
+    同一矢量在不同经度上被分解成不同的 (u, v) 分量。直接对这些分量做
+    双线性插值，会让"极点风"随查询经度旋转一整圈（实测 u/v 极差 36–47 m/s）。
+
+    做法：每个样本按它自己的经度还原成世界坐标矢量，平均后再投影回
+    经度 0 的本地东/北方向。
+
+    注意南北半球的东向定义镜像：南极处"东"的绕行方向与北极相反。
+    """
+    n = u_row.size
+    lam = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    sign = 1.0 if lat_deg >= 0 else -1.0
+
+    # 本地东向单位矢量的世界坐标（纬度 ±90 处，切平面与赤道面平行）
+    # 北极：east = (-sinλ, 0, -cosλ)；南极镜像后符号取反
+    ex = -np.sin(lam) * sign
+    ez = -np.cos(lam) * sign
+    # 极点处"北向"没有意义，风矢量的南北分量在该点全部退化为径向，
+    # 这里把 v 也按本地北向投影（北极北向指向 -X 方向即经度 180）
+    nx = -np.cos(lam)
+    nz = np.sin(lam) * sign
+
+    # 累加成世界矢量
+    wx = float(np.nanmean(u_row * ex + v_row * nx))
+    wz = float(np.nanmean(u_row * ez + v_row * nz))
+
+    # 投影回经度 0 处的本地分量
+    u0 = wx * ex[0] + wz * ez[0]
+    v0 = wx * nx[0] + wz * nz[0]
+    return (float(u0), float(v0))
+
+
 def pack_bin(path: str, header: dict, data: np.ndarray) -> None:
     h = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     with open(path, "wb") as f:
@@ -356,6 +391,23 @@ def main() -> int:
             v_r = resample(ds["v"][lv], lat, lon, tlats, tlons)
             t_r = resample(ds["t"][lv], lat, lon, tlats, tlons)
             c_r = np.clip(resample(cat[lv], lat, lon, tlats, tlons), 0.0, 1.0)
+
+            # 极点是单点，风矢量必须唯一。
+            #
+            # 但 GFS 的极圈网格在极点处是一个「纬圈」，不同经度上的 u/v
+            # 分量方向不同（同一个风矢量在不同经度上的分解）。直接双线性
+            # 插值会把它们当成不同值，结果就是极点行的风矢量随经度
+            # 旋转一整圈（实测 u/v 极差达 36–47 m/s）。
+            #
+            # 正确做法：把极点行替换为该纬度上所有经度矢量的平均值。
+            # 注意是「矢量平均」——先按球面方向还原再平均，而不是
+            # 直接对 u/v 取算术平均（那个结果取决于网格从哪个经度起算）。
+            for edge in (0, len(tlats) - 1):
+                if abs(abs(tlats[edge]) - 90.0) < 1e-6:
+                    u_r[edge, :] = _pole_vector_mean(u_r[edge, :], v_r[edge, :], tlats[edge])[0]
+                    v_r[edge, :] = _pole_vector_mean(u_r[edge, :], v_r[edge, :], tlats[edge])[1]
+                    t_r[edge, :] = float(np.nanmean(t_r[edge, :]))
+                    c_r[edge, :] = float(np.nanmean(c_r[edge, :]))
 
             spd = np.hypot(u_r, v_r)
             stats.append({

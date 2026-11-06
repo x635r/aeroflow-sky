@@ -1,6 +1,7 @@
 import type { Comparison } from '../../sim/routeEngine';
 import { formatHm, msToKmh } from '../../core/atmos';
 import { WIND_RAMP, sampleRamp, toCss } from '../../render/palette';
+import { CAT_AFFECTED_THRESHOLD } from '../../sim/routeEngine';
 
 type Props = {
   result: Comparison | null;
@@ -45,6 +46,10 @@ export function ResultPanel({ result, fromCode, toCode }: Props) {
   const revKmh = msToKmh(reverse.avgGroundSpeed);
   const gcKmh = msToKmh(gc.avgGroundSpeed);
 
+  // 任一方向存在飞不出来的航段时，时长不可当作真实航班时间
+  const infeasibleLegs = Math.max(optimal.infeasibleLegs ?? 0, reverse.infeasibleLegs ?? 0);
+  const hasInfeasible = infeasibleLegs > 0;
+
   const saved = timeSaved / 60;
   const extraKm = optimal.extraDistance / 1000;
 
@@ -61,6 +66,19 @@ export function ResultPanel({ result, fromCode, toCode }: Props) {
           {Math.round(optimal.distance / 1000).toLocaleString('en-US')} km
         </span>
       </div>
+
+      {hasInfeasible && (
+        <div className="rp-warn">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+            <path d="M12 8v5M12 17h.01" strokeLinecap="round" />
+            <circle cx="12" cy="12" r="9" />
+          </svg>
+          <span>
+            有 {infeasibleLegs} 段航路的风超过真空速，物理上飞不出来。
+            下方时长包含这些航段的极限代价，<b>不是可执行航班</b>。
+          </span>
+        </div>
+      )}
 
       <div className="versus">
         <div className="versus-cell">
@@ -142,7 +160,11 @@ export function ResultPanel({ result, fromCode, toCode }: Props) {
             <span
               className="metric-value"
               data-tone={
-                optimal.catFraction > 0.5 ? 'bad' : optimal.catFraction > 0.25 ? 'warn' : undefined
+                optimal.catFraction > CAT_AFFECTED_THRESHOLD
+                  ? 'bad'
+                  : optimal.catFraction > CAT_AFFECTED_THRESHOLD * 0.5
+                    ? 'warn'
+                    : undefined
               }
             >
               {(optimal.catFraction * 100).toFixed(0)}

@@ -247,20 +247,22 @@ export function sampleWind(
   const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy);
   const w01 = (1 - fx) * fy, w11 = fx * fy;
 
-  const layerWeight = [1 - fl, fl];
-  const stepWeight = [1 - fs, fs];
-  const layerIdx = [l0, l1];
-  const stepIdx = [s0, s1];
+  // 用标量而不是数组：sampleWind 是航路推演的热路径
+  // （单次 DP 约 1.1 万次调用），每次分配 4 个数组纯属浪费。
+  const ws0 = 1 - fs;
+  const ws1 = fs;
+  const wl0 = 1 - fl;
+  const wl1 = fl;
 
   for (let a = 0; a < 2; a++) {
-    const ws = stepWeight[a];
+    const ws = a === 0 ? ws0 : ws1;
     if (ws <= 0.0001) continue;
     for (let b = 0; b < 2; b++) {
-      const wl = layerWeight[b];
+      const wl = b === 0 ? wl0 : wl1;
       if (wl <= 0.0001) continue;
       const w = ws * wl;
-      const s = stepIdx[a];
-      const l = layerIdx[b];
+      const s = a === 0 ? s0 : s1;
+      const l = b === 0 ? l0 : l1;
 
       texelAt(field, s, l, y0, x0, scratchA);
       texelAt(field, s, l, y0, x1, scratchB);
